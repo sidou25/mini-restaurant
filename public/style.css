@@ -425,14 +425,15 @@ details.more .inner { padding: 16px; }
   .caisse { padding-bottom: 80px; }
 }
 @media (max-width: 720px) {
-  :root { --nav-h: 66px; }
+  /* + la zone du bas de l'écran (barre des gestes / iPhone) quand le site est installé en appli */
+  :root { --nav-h: calc(66px + env(safe-area-inset-bottom, 0px)); }
   /* sans flou : sinon le menu « fixed » resterait collé à la barre du haut */
-  .top { padding: 10px 16px; backdrop-filter: none; background: var(--bg); }
+  .top { padding: max(10px, env(safe-area-inset-top, 0px)) 16px 10px; backdrop-filter: none; background: var(--bg); }
   /* la navigation descend en bas, comme une appli */
   #nav {
     position: fixed; left: 0; right: 0; bottom: 0; height: var(--nav-h); z-index: 40;
     background: rgba(11,11,12,.96); backdrop-filter: blur(10px); border-top: 1px solid var(--line);
-    gap: 0; padding: 0 4px env(safe-area-inset-bottom);
+    gap: 0; padding: 0 4px env(safe-area-inset-bottom, 0px); overflow: visible;
   }
   #nav a { flex: 1; flex-direction: column; justify-content: center; gap: 2px; font-size: 11px; padding: 6px 2px; border-radius: 0; }
   #nav a .ico { font-size: 22px; }
