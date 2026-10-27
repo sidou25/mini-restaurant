@@ -42,6 +42,12 @@ async function api(url, { method = 'GET', body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  // Nouvelle version en ligne ? On rechargera la page au prochain changement de page
+  const version = res.headers.get('X-App-Version');
+  if (version) {
+    if (!S.version) S.version = version;
+    else if (version !== S.version) S.newVersion = true;
+  }
   if (res.status === 401 && !url.startsWith('/api/login')) {
     showAuth(false);
     throw new Error('Connecte-toi');
@@ -218,6 +224,8 @@ function renderNav() {
 
 function router() {
   if (!S.me) return;
+  // une nouvelle version est en ligne : on recharge (sauf si une commande est en cours de saisie)
+  if (S.newVersion && !Object.keys(S.cart).length) return location.reload();
   clearInterval(S.poll);
   const id = location.hash.slice(1);
   const page = visiblePages().find(p => p.id === id) || visiblePages()[0];
@@ -924,21 +932,16 @@ async function renderMenu(el) {
       <button class="btn primary">+ Ajouter</button>
       <datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
     </form>
-    <div class="card table-wrap" style="padding:0 6px">
-      <table>
-        <thead><tr><th></th><th>Nom</th><th>Catégorie</th><th>Prix (DA)</th><th>En vente</th><th></th></tr></thead>
-        <tbody>
-          ${all.map(p => `
-            <tr data-row="${p.id}">
-              <td style="font-size:24px">${emojiOf(p)}</td>
-              <td><input data-k="name" value="${esc(p.name)}"></td>
-              <td><input data-k="category" value="${esc(p.category)}" list="cats"></td>
-              <td><input data-k="price" type="number" min="0" step="10" value="${p.price}" style="width:110px"></td>
-              <td><input data-k="active" type="checkbox" ${p.active ? 'checked' : ''}></td>
-              <td><button class="btn small" data-save="${p.id}">Enregistrer</button></td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
+    <div class="menu-list">
+      ${all.map(p => `
+        <div class="menu-item ${p.active ? '' : 'off'}" data-row="${p.id}">
+          <span class="m-emoji">${emojiOf(p)}</span>
+          <label class="m-name">Nom <input data-k="name" value="${esc(p.name)}"></label>
+          <label class="m-cat">Catégorie <input data-k="category" value="${esc(p.category)}" list="cats"></label>
+          <label class="m-price">Prix (DA) <input data-k="price" type="number" min="0" step="10" inputmode="numeric" value="${p.price}"></label>
+          <label class="check-row m-active"><input data-k="active" type="checkbox" ${p.active ? 'checked' : ''}> En vente</label>
+          <button class="btn small m-save" data-save="${p.id}">Enregistrer</button>
+        </div>`).join('')}
     </div>
     <p class="muted">Changer un prix ne change pas les anciennes commandes. Décoche « En vente » pour cacher un produit de la caisse.</p>`;
 
@@ -961,6 +964,7 @@ async function renderMenu(el) {
       method: 'PUT',
       body: { name: v('name').value, category: v('category').value, price: Number(v('price').value), active: v('active').checked },
     });
+    row.classList.toggle('off', !v('active').checked);
     toast('✓ Produit enregistré');
     S.products = await api('/api/products');
   }));
@@ -1136,6 +1140,7 @@ async function renderLivreurPage(el, auto = false) {
   clearInterval(S.poll);
   S.poll = setInterval(() => {
     if (document.visibilityState === 'visible' && !$('#modal').offsetParent) {
+      if (S.newVersion) return location.reload();
       renderLivreurPage(el, true).catch(() => {});
     }
   }, 45000);

@@ -271,6 +271,19 @@ th { font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spa
 td.num, th.num { text-align: right; white-space: nowrap; }
 td input { width: 100%; }
 
+/* ===== Menu (produits) ===== */
+.menu-list { display: grid; gap: 10px; }
+.menu-item {
+  display: grid; grid-template-columns: 40px minmax(0, 2fr) minmax(0, 1.2fr) 130px auto auto;
+  gap: 10px 12px; align-items: end;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+}
+.menu-item label { margin: 0; }
+.menu-item.off { opacity: .5; }
+.m-emoji { font-size: 28px; align-self: center; text-align: center; }
+.m-active { padding-bottom: 10px; color: var(--ink); }
+.m-save { margin-bottom: 4px; }
+
 /* ===== Accueil admin (simple) ===== */
 .hello { font-size: 15px; color: var(--muted); }
 .big-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
@@ -436,6 +449,12 @@ details.more .inner { padding: 16px; }
   .liv-grid { grid-template-columns: 1fr; }
   .big-card .value { font-size: 46px; }
   .orders { grid-template-columns: 1fr; }
+  /* Menu : une carte par produit, le nom sur toute la largeur */
+  .menu-item { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
+  .m-emoji { grid-row: span 3; align-self: start; padding-top: 22px; }
+  .m-name { grid-column: 2 / 4; }
+  .m-active { padding-bottom: 0; }
+  .m-save { margin: 0; }
 }
 
 /* ===== Bon de commande (impression ticket 80 mm) ===== */

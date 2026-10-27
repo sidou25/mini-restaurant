@@ -15,8 +15,12 @@ app.set('trust proxy', 1); // Vercel est devant nous (HTTPS + vraie IP du client
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Version du site : change à chaque mise en ligne (le navigateur se recharge tout seul)
+const VERSION = process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now());
+
 // Avant toute route /api : configuration présente et base prête (sinon message clair)
 app.use('/api', (req, res, next) => {
+  res.set('X-App-Version', VERSION);
   if (isProd && !process.env.SESSION_SECRET) {
     return res.status(500).json({ error: "SESSION_SECRET manquant dans les variables d'environnement" });
   }
