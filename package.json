@@ -1,0 +1,24 @@
+{
+  "name": "mini-restaurant",
+  "version": "1.0.0",
+  "description": "Caisse + suivi des livreurs pour un mini restaurant",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js",
+    "db": "node scripts/local-db.mjs"
+  },
+  "dependencies": {
+    "connect-pg-simple": "^10.0.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.7.1",
+    "express-session": "^1.18.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

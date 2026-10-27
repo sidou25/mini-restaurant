@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Restaurant</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Écran de connexion / premier lancement -->
+  <div id="auth" class="auth hidden">
+    <form id="auth-form" class="card auth-card">
+      <div class="logo">🍔</div>
+      <h1 id="auth-title">Connexion</h1>
+      <p id="auth-help" class="muted"></p>
+      <label id="code-field" class="hidden">Code d'installation <input name="code" autocomplete="off"></label>
+      <label>Nom d'utilisateur <input name="username" autocomplete="username" required></label>
+      <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary big" id="auth-btn">Se connecter</button>
+      <p id="auth-error" class="error"></p>
+    </form>
+  </div>
+
+  <!-- Application -->
+  <div id="shell" class="hidden">
+    <header class="top">
+      <div class="brand"><span>🍔</span> <b id="resto-name">Mini Restaurant</b></div>
+      <nav id="nav"></nav>
+      <div class="me"><span id="me-name"></span> <button class="btn ghost small" id="logout">Sortir</button></div>
+    </header>
+    <main id="page"></main>
+  </div>
+
+  <div id="modal" class="modal hidden"><div class="card modal-box" id="modal-box"></div></div>
+  <div id="toast" class="toast"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
