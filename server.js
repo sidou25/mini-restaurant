@@ -268,6 +268,28 @@ app.put('/api/livreurs/:id', admin, route(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Supprimer un livreur. Refusé s'il doit encore de l'argent.
+// S'il a déjà travaillé, on le cache seulement (ses anciennes commandes restent dans les chiffres).
+app.delete('/api/livreurs/:id', admin, route(async (req, res) => {
+  const l = await one(`
+    SELECT l.id, l.name,
+      (SELECT COALESCE(SUM(food_total), 0) FROM orders o WHERE o.livreur_id = l.id AND o.status != 'annulee')
+        - (SELECT COALESCE(SUM(amount), 0) FROM versements v WHERE v.livreur_id = l.id) AS reste,
+      EXISTS (SELECT 1 FROM orders o WHERE o.livreur_id = l.id)
+        OR EXISTS (SELECT 1 FROM versements v WHERE v.livreur_id = l.id) AS has_history
+    FROM livreurs l WHERE l.id = $1`, [id(req.params.id)]);
+  if (!l) fail('Livreur introuvable', 404);
+  if (l.reste > 0) {
+    fail(`${l.name} doit encore ${l.reste.toLocaleString('fr-FR')} DA. Encaisse d'abord son argent, puis supprime-le.`);
+  }
+  await transaction(async client => {
+    await client.query('DELETE FROM users WHERE livreur_id = $1', [l.id]);
+    if (l.has_history) await client.query('UPDATE livreurs SET active = FALSE WHERE id = $1', [l.id]);
+    else await client.query('DELETE FROM livreurs WHERE id = $1', [l.id]);
+  });
+  res.json({ ok: true });
+}));
+
 // Le compte de chaque livreur.
 // Règle : dès qu'une commande part avec le livreur, il doit rendre le prix de la nourriture
 // (food_total). Les frais de livraison sont à lui. Seul l'admin peut annuler une commande.

@@ -639,7 +639,7 @@ async function renderAccueil(el) {
 
     <div class="section-title"><h2>Tes livreurs</h2><a class="btn small" href="#livreurs">Gérer</a></div>
     <div class="people">
-      ${st.livreurs.map((l, i) => `
+      ${st.livreurs.filter(l => l.active || l.reste !== 0).map((l, i) => `
         <div class="person ${l.reste > 0 ? 'owes' : ''}" style="animation-delay:${i * 50}ms">
           <div class="avatar">${esc(l.name.trim()[0]?.toUpperCase())}</div>
           <div class="who">
@@ -718,7 +718,8 @@ async function renderAccueil(el) {
 // ---------- Livreurs (admin) ----------
 
 async function renderLivreurs(el) {
-  const comptes = await api(`/api/livreurs/comptes?from=${ymd()}&to=${ymd()}`);
+  const comptes = (await api(`/api/livreurs/comptes?from=${ymd()}&to=${ymd()}`))
+    .filter(l => l.active || l.reste !== 0);
   const totalDette = comptes.reduce((s, l) => s + Math.max(l.reste, 0), 0);
   const refresh = () => renderLivreurs(el);
 
@@ -757,6 +758,7 @@ async function renderLivreurs(el) {
             <button class="btn small" data-histo="${l.id}">Historique</button>
             <button class="btn small" data-acces="${l.id}">🔑 Accès</button>
             <button class="btn small ghost" data-edit="${l.id}">Modifier</button>
+            <button class="btn small danger" data-del-livreur="${l.id}">🗑️ Supprimer</button>
           </div>
         </div>`).join('') || '<div class="card empty"><span class="big-emoji">🛵</span>Aucun livreur pour l\'instant.</div>'}
     </div>`;
@@ -767,6 +769,20 @@ async function renderLivreurs(el) {
   $$('[data-verser]', el).forEach(b => b.onclick = () => verser(byId(b.dataset.verser), refresh));
   $$('[data-acces]', el).forEach(b => b.onclick = () => editAcces(byId(b.dataset.acces), refresh));
   $$('[data-histo]', el).forEach(b => b.onclick = () => attempt(() => historique(b.dataset.histo, refresh)));
+  $$('[data-del-livreur]', el).forEach(b => b.onclick = () => supprimerLivreur(byId(b.dataset.delLivreur), refresh));
+}
+
+function supprimerLivreur(l, done) {
+  if (l.reste > 0) {
+    return toast(`${l.name} doit encore ${da(l.reste)}. Encaisse d'abord son argent.`, true);
+  }
+  confirmer(`Supprimer <b>${esc(l.name)}</b> ? Il ne pourra plus se connecter.
+    Ses anciennes livraisons restent dans tes chiffres.`, async () => {
+    await api(`/api/livreurs/${l.id}`, { method: 'DELETE' });
+    S.livreurs = await api('/api/livreurs');
+    toast(`${l.name} est supprimé`);
+    done();
+  }, '🗑️ Oui, supprimer');
 }
 
 function editLivreur(l, done) {
