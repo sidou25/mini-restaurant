@@ -268,8 +268,8 @@ app.put('/api/livreurs/:id', admin, route(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// Supprimer un livreur. Refusé s'il doit encore de l'argent.
-// S'il a déjà travaillé, on le cache seulement (ses anciennes commandes restent dans les chiffres).
+// Supprimer un livreur. S'il doit encore de l'argent, il faut ?force=1 (le patron accepte d'oublier la dette).
+// S'il a déjà travaillé, on le cache seulement (ses anciennes commandes restent dans les ventes).
 app.delete('/api/livreurs/:id', admin, route(async (req, res) => {
   const l = await one(`
     SELECT l.id, l.name,
@@ -279,7 +279,7 @@ app.delete('/api/livreurs/:id', admin, route(async (req, res) => {
         OR EXISTS (SELECT 1 FROM versements v WHERE v.livreur_id = l.id) AS has_history
     FROM livreurs l WHERE l.id = $1`, [id(req.params.id)]);
   if (!l) fail('Livreur introuvable', 404);
-  if (l.reste > 0) {
+  if (l.reste > 0 && req.query.force !== '1') {
     fail(`${l.name} doit encore ${l.reste.toLocaleString('fr-FR')} DA. Encaisse d'abord son argent, puis supprime-le.`);
   }
   await transaction(async client => {
@@ -313,8 +313,8 @@ async function livreurComptes(from, to, onlyId = null) {
     WHERE $3::int IS NULL OR l.id = $3
     ORDER BY l.active DESC, l.name`, [from, to, onlyId]);
   return rows.map(l => ({ ...l, reste: l.du_total - l.verse_total }))
-    // on garde les anciens livreurs seulement s'ils ont encore une dette ou une activité
-    .filter(l => l.active || l.reste !== 0 || l.nb > 0);
+    // un livreur supprimé reste seulement dans les chiffres de la période où il a travaillé
+    .filter(l => l.active || l.nb > 0);
 }
 
 app.get('/api/livreurs/comptes', admin, route(async (req, res) => {
@@ -497,6 +497,17 @@ app.patch('/api/orders/:id/status', auth, route(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Supprimer une commande (le client a annulé) : elle disparaît des ventes et de la dette du livreur.
+// Seulement l'admin, pour qu'on ne puisse pas effacer une vente en cachette.
+app.delete('/api/orders/:id', admin, route(async (req, res) => {
+  const deleted = await transaction(async client => {
+    await client.query('DELETE FROM order_items WHERE order_id = $1', [id(req.params.id)]);
+    return (await client.query('DELETE FROM orders WHERE id = $1', [id(req.params.id)])).rowCount;
+  });
+  if (!deleted) fail('Commande introuvable', 404);
+  res.json({ ok: true });
+}));
+
 // ---------- Tableau de bord ----------
 
 app.get('/api/stats', admin, route(async (req, res) => {
@@ -526,7 +537,7 @@ app.get('/api/stats', admin, route(async (req, res) => {
     GROUP BY oi.name ORDER BY qty DESC, montant DESC`, p);
 
   const livreurs = await livreurComptes(from, to);
-  const chez_livreurs = livreurs.reduce((s, l) => s + Math.max(l.reste, 0), 0);
+  const chez_livreurs = livreurs.filter(l => l.active).reduce((s, l) => s + Math.max(l.reste, 0), 0);
 
   res.json({ from, to, totals, produits, livreurs, chez_livreurs });
 }));

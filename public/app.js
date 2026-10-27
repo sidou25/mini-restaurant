@@ -545,13 +545,16 @@ async function renderCommandes(el) {
     toast('✓ Commande marquée livrée');
     renderCommandes(el);
   }));
-  $$('[data-annuler]', el).forEach(b => b.onclick = () => confirmer(
-    `Annuler la commande n°${b.dataset.annuler} ? Elle ne comptera plus dans les ventes ni dans ce que doit le livreur.`,
+  $$('[data-supprimer]', el).forEach(b => b.onclick = () => {
+    const o = byId(b.dataset.supprimer);
+    confirmer(`Le client a annulé ? Supprimer la commande <b>n°${o.id}</b> (${da(o.food_total)}) ?
+      Elle disparaît des ventes${o.livreur_name ? ` et ${esc(o.livreur_name)} ne la doit plus` : ''}.`,
     async () => {
-      await api(`/api/orders/${b.dataset.annuler}/status`, { method: 'PATCH', body: { status: 'annulee' } });
-      toast('Commande annulée');
+      await api(`/api/orders/${o.id}`, { method: 'DELETE' });
+      toast(`🗑️ Commande n°${o.id} supprimée`);
       renderCommandes(el);
-    }, 'Oui, annuler'));
+    }, '🗑️ Oui, supprimer');
+  });
 }
 
 function orderCard(o, i) {
@@ -579,7 +582,7 @@ function orderCard(o, i) {
       <div class="actions">
         <button class="btn small" data-print="${o.id}">🖨️ Bon</button>
         ${o.status === 'en_cours' ? `<button class="btn small green" data-livree="${o.id}">✓ Livrée</button>` : ''}
-        ${isAdmin() && o.status !== 'annulee' ? `<button class="btn small danger" data-annuler="${o.id}">Annuler</button>` : ''}
+        ${isAdmin() ? `<button class="btn small danger" data-supprimer="${o.id}">🗑️ Supprimer</button>` : ''}
       </div>
     </div>`;
 }
@@ -639,7 +642,7 @@ async function renderAccueil(el) {
 
     <div class="section-title"><h2>Tes livreurs</h2><a class="btn small" href="#livreurs">Gérer</a></div>
     <div class="people">
-      ${st.livreurs.filter(l => l.active || l.reste !== 0).map((l, i) => `
+      ${st.livreurs.filter(l => l.active).map((l, i) => `
         <div class="person ${l.reste > 0 ? 'owes' : ''}" style="animation-delay:${i * 50}ms">
           <div class="avatar">${esc(l.name.trim()[0]?.toUpperCase())}</div>
           <div class="who">
@@ -719,7 +722,7 @@ async function renderAccueil(el) {
 
 async function renderLivreurs(el) {
   const comptes = (await api(`/api/livreurs/comptes?from=${ymd()}&to=${ymd()}`))
-    .filter(l => l.active || l.reste !== 0);
+    .filter(l => l.active);
   const totalDette = comptes.reduce((s, l) => s + Math.max(l.reste, 0), 0);
   const refresh = () => renderLivreurs(el);
 
@@ -773,16 +776,16 @@ async function renderLivreurs(el) {
 }
 
 function supprimerLivreur(l, done) {
-  if (l.reste > 0) {
-    return toast(`${l.name} doit encore ${da(l.reste)}. Encaisse d'abord son argent.`, true);
-  }
-  confirmer(`Supprimer <b>${esc(l.name)}</b> ? Il ne pourra plus se connecter.
-    Ses anciennes livraisons restent dans tes chiffres.`, async () => {
-    await api(`/api/livreurs/${l.id}`, { method: 'DELETE' });
+  const dette = l.reste > 0;
+  confirmer(`${dette ? `⚠️ <b>${esc(l.name)}</b> doit encore <b class="plus">${da(l.reste)}</b>.
+    Si tu le supprimes, <b>cet argent ne sera plus compté</b>.<br><br>` : ''}
+    Supprimer <b>${esc(l.name)}</b> ? Il ne pourra plus se connecter.
+    Ses anciennes livraisons restent dans tes ventes.`, async () => {
+    await api(`/api/livreurs/${l.id}${dette ? '?force=1' : ''}`, { method: 'DELETE' });
     S.livreurs = await api('/api/livreurs');
     toast(`${l.name} est supprimé`);
     done();
-  }, '🗑️ Oui, supprimer');
+  }, dette ? '🗑️ Supprimer quand même' : '🗑️ Oui, supprimer');
 }
 
 function editLivreur(l, done) {
