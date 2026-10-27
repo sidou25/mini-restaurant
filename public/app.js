@@ -998,6 +998,15 @@ async function renderReglages(el) {
         ${passwordForm()}
       </div>
 
+      <div class="card">
+        <h2>📲 Application sur le téléphone</h2>
+        ${isInstalled()
+          ? '<p class="moins">✓ Tu utilises déjà l\'application installée.</p>'
+          : `<p class="muted">Installe Brother sur ton téléphone : une icône sur l'écran d'accueil,
+              et le site s'ouvre en plein écran comme une vraie application.</p>
+            <button class="btn primary" id="install-card-btn">📲 Installer l'application</button>`}
+      </div>
+
       ${isAdmin() ? `
         <div class="card">
           <h2>Comptes</h2>
@@ -1067,6 +1076,7 @@ async function renderReglages(el) {
   }));
 
   bindPasswordForm(el);
+  $('#install-card-btn', el)?.addEventListener('click', installApp);
 
   $('#uf', el)?.addEventListener('submit', e => attempt(async () => {
     e.preventDefault();
@@ -1180,5 +1190,44 @@ function deliverCard(o, i, fresh) {
       <button class="btn green big" data-livree="${o.id}">✅ C'est livré</button>
     </div>`;
 }
+
+// ---------- Application installable (PWA) ----------
+
+let installPrompt = null;
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+
+// Chrome propose l'installation : on garde l'événement pour notre propre bouton
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  installPrompt = e;
+  $('#install').classList.remove('hidden');
+  $('#install-card-btn')?.removeAttribute('disabled');
+});
+
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('#install').classList.add('hidden');
+  toast('✅ Application installée ! Elle est sur ton écran d\'accueil.');
+});
+
+async function installApp() {
+  if (!installPrompt) {
+    return openModal(`
+      <h2>📲 Installer l'application</h2>
+      <p>Dans Chrome, touche le menu <b>⋮</b> en haut à droite, puis <b>« Installer l'application »</b>
+        (ou « Ajouter à l'écran d'accueil »).</p>
+      <p class="muted">Sur iPhone (Safari) : bouton <b>Partager</b> puis <b>« Sur l'écran d'accueil »</b>.</p>
+      <div class="modal-actions"><button class="btn primary" data-close>Compris</button></div>`);
+  }
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  $('#install').classList.add('hidden');
+}
+$('#install').onclick = installApp;
 
 boot().catch(e => toast(e.message, true));

@@ -14,6 +14,8 @@ const isProd = onVercel || process.env.NODE_ENV === 'production';
 app.set('trust proxy', 1); // Vercel est devant nous (HTTPS + vraie IP du client)
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+// assetlinks.json (APK Android) : express.static ignore les dossiers qui commencent par un point
+app.use('/.well-known', express.static(path.join(__dirname, 'public', '.well-known')));
 
 // Version du site : change à chaque mise en ligne (le navigateur se recharge tout seul)
 const VERSION = process.env.VERCEL_DEPLOYMENT_ID || process.env.VERCEL_GIT_COMMIT_SHA || String(Date.now());

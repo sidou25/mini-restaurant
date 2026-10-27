@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b0b0c">
   <title>Brother</title>
+  <!-- Application installable sur le téléphone -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Brother">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -31,6 +39,7 @@
       <div class="logo"><span class="logo-mark" id="logo-mark">B</span><span class="logo-text" id="resto-name">BROTHER</span></div>
       <nav id="nav"></nav>
       <div class="me">
+        <button class="btn primary small hidden" id="install">📲 Installer</button>
         <span id="me-name"></span>
         <button class="btn ghost small" id="logout" title="Se déconnecter">Sortir</button>
       </div>
