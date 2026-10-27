@@ -64,6 +64,18 @@ CREATE TABLE IF NOT EXISTS versements (
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
 );
 
+-- Comptes livreur : rôle 'livreur' relié à une ligne de la table livreurs
+ALTER TABLE users ADD COLUMN IF NOT EXISTS livreur_id INTEGER REFERENCES livreurs(id);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_role_check3') THEN
+    ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+    ALTER TABLE users ADD CONSTRAINT users_role_check3
+      CHECK (role IN ('admin', 'caissier', 'livreur') AND (role = 'livreur') = (livreur_id IS NOT NULL));
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_livreur ON users(livreur_id);
+
 -- Sessions de connexion (connect-pg-simple)
 CREATE TABLE IF NOT EXISTS session (
   sid VARCHAR NOT NULL PRIMARY KEY,
@@ -77,8 +89,9 @@ CREATE INDEX IF NOT EXISTS idx_orders_livreur ON orders(livreur_id);
 CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_versements_livreur ON versements(livreur_id);
 
-INSERT INTO settings (key, value) VALUES ('restaurant_name', 'Mini Restaurant'), ('delivery_fee', '200')
+INSERT INTO settings (key, value) VALUES ('restaurant_name', 'Brother'), ('delivery_fee', '200')
 ON CONFLICT (key) DO NOTHING;
+UPDATE settings SET value = 'Brother' WHERE key = 'restaurant_name' AND value = 'Mini Restaurant';
 
 -- Menu de départ (seulement si la table est vide), modifiable dans la page Produits
 INSERT INTO products (name, category, price)

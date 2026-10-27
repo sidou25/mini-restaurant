@@ -100,10 +100,29 @@ async function period(req) {
   return [from, to];
 }
 
-const auth = (req, res, next) =>
-  req.session.user ? next() : res.status(401).json({ error: 'Non connecté' });
-const admin = (req, res, next) =>
-  req.session.user?.role === 'admin' ? next() : res.status(403).json({ error: "Réservé à l'admin" });
+// Relit le compte à chaque requête : un compte supprimé ou un livreur désactivé est coupé tout de suite
+const findUser = userId => one(`
+  SELECT u.id, u.username, u.role, u.livreur_id, l.name AS livreur_name
+  FROM users u LEFT JOIN livreurs l ON l.id = u.livreur_id
+  WHERE u.id = $1 AND (u.role != 'livreur' OR l.active)`, [userId]);
+
+// allow() = tout compte connecté ; allow('admin') = seulement l'admin, etc.
+const allow = (...roles) => (req, res, next) => {
+  if (!req.session.user) return res.status(401).json({ error: 'Non connecté' });
+  findUser(req.session.user.id).then(user => {
+    if (!user) {
+      req.session.user = null;
+      return res.status(401).json({ error: 'Non connecté' });
+    }
+    if (roles.length && !roles.includes(user.role)) return res.status(403).json({ error: 'Accès refusé' });
+    req.user = user;
+    next();
+  }, next);
+};
+const auth = allow();
+const staff = allow('admin', 'caissier'); // la caisse
+const admin = allow('admin');
+const livreurOnly = allow('livreur');
 
 // ---------- Connexion ----------
 
@@ -128,25 +147,27 @@ app.post('/api/setup', loginLimit, route(async (req, res) => {
     "INSERT INTO users (username, password, role) VALUES ($1, $2, 'admin') RETURNING id, username, role",
     [username, hashPassword(password)],
   );
-  req.session.user = user;
+  req.session.user = { id: user.id };
   res.json(user);
 }));
 
 app.post('/api/login', loginLimit, route(async (req, res) => {
-  const user = await one('SELECT * FROM users WHERE username = $1', [text(req.body.username, 40)]);
-  if (!user || !checkPassword(String(req.body.password || ''), user.password)) {
+  const row = await one('SELECT * FROM users WHERE username = $1', [text(req.body.username, 40)]);
+  if (!row || !checkPassword(String(req.body.password || ''), row.password)) {
     fail('Identifiants incorrects', 401);
   }
-  req.session.user = { id: user.id, username: user.username, role: user.role };
-  res.json(req.session.user);
+  const user = await findUser(row.id);
+  if (!user) fail('Ce compte livreur est désactivé', 403);
+  req.session.user = { id: user.id };
+  res.json(user);
 }));
 
 app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
 
-app.get('/api/me', auth, (req, res) => res.json(req.session.user));
+app.get('/api/me', auth, (req, res) => res.json(req.user));
 
 app.put('/api/me/password', auth, route(async (req, res) => {
-  const user = await one('SELECT * FROM users WHERE id = $1', [req.session.user.id]);
+  const user = await one('SELECT * FROM users WHERE id = $1', [req.user.id]);
   if (!checkPassword(String(req.body.old || ''), user.password)) fail('Ancien mot de passe incorrect');
   const pw = String(req.body.password || '');
   if (pw.length < 6) fail('Mot de passe trop court (6 caractères minimum)');
@@ -157,7 +178,9 @@ app.put('/api/me/password', auth, route(async (req, res) => {
 // ---------- Utilisateurs (admin) ----------
 
 app.get('/api/users', admin, route(async (req, res) => {
-  res.json(await all('SELECT id, username, role FROM users ORDER BY id'));
+  res.json(await all(`
+    SELECT u.id, u.username, u.role, l.name AS livreur_name
+    FROM users u LEFT JOIN livreurs l ON l.id = u.livreur_id ORDER BY u.id`));
 }));
 
 app.post('/api/users', admin, route(async (req, res) => {
@@ -173,7 +196,7 @@ app.post('/api/users', admin, route(async (req, res) => {
 }));
 
 app.delete('/api/users/:id', admin, route(async (req, res) => {
-  if (id(req.params.id) === req.session.user.id) fail('Tu ne peux pas supprimer ton propre compte');
+  if (id(req.params.id) === req.user.id) fail('Tu ne peux pas supprimer ton propre compte');
   await pool.query('DELETE FROM users WHERE id = $1', [id(req.params.id)]);
   res.json({ ok: true });
 }));
@@ -198,8 +221,8 @@ app.put('/api/settings', admin, route(async (req, res) => {
 
 // ---------- Produits ----------
 
-app.get('/api/products', auth, route(async (req, res) => {
-  const showAll = req.query.all === '1' && req.session.user.role === 'admin';
+app.get('/api/products', staff, route(async (req, res) => {
+  const showAll = req.query.all === '1' && req.user.role === 'admin';
   // Les catégories restent dans l'ordre où elles ont été créées
   res.json(await all(`
     SELECT * FROM products ${showAll ? '' : 'WHERE active'}
@@ -226,7 +249,7 @@ app.put('/api/products/:id', admin, route(async (req, res) => {
 
 // ---------- Livreurs ----------
 
-app.get('/api/livreurs', auth, route(async (req, res) => {
+app.get('/api/livreurs', staff, route(async (req, res) => {
   res.json(await all('SELECT * FROM livreurs WHERE active ORDER BY name'));
 }));
 
@@ -249,7 +272,7 @@ app.put('/api/livreurs/:id', admin, route(async (req, res) => {
 // Règle : dès qu'une commande part avec le livreur, il doit rendre le prix de la nourriture
 // (food_total). Les frais de livraison sont à lui. Seul l'admin peut annuler une commande.
 // reste = tout ce qu'il doit depuis le début − tout ce qu'il a déjà versé.
-async function livreurComptes(from, to) {
+async function livreurComptes(from, to, onlyId = null) {
   const rows = await all(`
     SELECT l.id, l.name, l.phone, l.active,
       (SELECT COUNT(*) FROM orders o WHERE o.livreur_id = l.id AND o.status != 'annulee'
@@ -262,9 +285,11 @@ async function livreurComptes(from, to) {
          AND v.created_at::date BETWEEN $1 AND $2) AS verse_periode,
       (SELECT COUNT(*) FROM orders o WHERE o.livreur_id = l.id AND o.status = 'en_cours') AS en_cours,
       (SELECT COALESCE(SUM(food_total), 0) FROM orders o WHERE o.livreur_id = l.id AND o.status != 'annulee') AS du_total,
-      (SELECT COALESCE(SUM(amount), 0) FROM versements v WHERE v.livreur_id = l.id) AS verse_total
+      (SELECT COALESCE(SUM(amount), 0) FROM versements v WHERE v.livreur_id = l.id) AS verse_total,
+      (SELECT username FROM users u WHERE u.livreur_id = l.id) AS acces
     FROM livreurs l
-    ORDER BY l.active DESC, l.name`, [from, to]);
+    WHERE $3::int IS NULL OR l.id = $3
+    ORDER BY l.active DESC, l.name`, [from, to, onlyId]);
   return rows.map(l => ({ ...l, reste: l.du_total - l.verse_total }))
     // on garde les anciens livreurs seulement s'ils ont encore une dette ou une activité
     .filter(l => l.active || l.reste !== 0 || l.nb > 0);
@@ -296,6 +321,46 @@ app.get('/api/livreurs/:id/compte', admin, route(async (req, res) => {
   res.json({ livreur, solde, lignes });
 }));
 
+// Créer ou changer l'accès (nom + mot de passe) d'un livreur
+app.put('/api/livreurs/:id/acces', admin, route(async (req, res) => {
+  const livreur = await one('SELECT id FROM livreurs WHERE id = $1', [id(req.params.id)]);
+  if (!livreur) fail('Livreur introuvable', 404);
+  const username = text(req.body.username, 40);
+  const password = String(req.body.password || '');
+  if (username.length < 3) fail("Nom d'utilisateur trop court (3 lettres minimum)");
+  if (password.length < 6) fail('Mot de passe trop court (6 caractères minimum)');
+  const taken = await one('SELECT 1 FROM users WHERE username = $1 AND livreur_id IS DISTINCT FROM $2', [username, livreur.id]);
+  if (taken) fail('Ce nom est déjà pris');
+  await pool.query(`
+    INSERT INTO users (username, password, role, livreur_id) VALUES ($1, $2, 'livreur', $3)
+    ON CONFLICT (livreur_id) DO UPDATE SET username = EXCLUDED.username, password = EXCLUDED.password`,
+  [username, hashPassword(password), livreur.id]);
+  res.json({ ok: true });
+}));
+
+app.delete('/api/livreurs/:id/acces', admin, route(async (req, res) => {
+  await pool.query('DELETE FROM users WHERE livreur_id = $1', [id(req.params.id)]);
+  res.json({ ok: true });
+}));
+
+// La page du livreur : ses commandes à livrer, ce qu'il a livré aujourd'hui, ce qu'il doit
+app.get('/api/livreur/moi', livreurOnly, route(async (req, res) => {
+  const lid = req.user.livreur_id;
+  const day = await today();
+  const aLivrer = await all(`${ORDER_SELECT}
+    WHERE o.livreur_id = $1 AND o.status = 'en_cours' ORDER BY o.id`, [lid]);
+  const livrees = await all(`${ORDER_SELECT}
+    WHERE o.livreur_id = $1 AND o.status = 'livree' AND o.created_at::date = $2 ORDER BY o.id DESC`, [lid, day]);
+  const [compte] = await livreurComptes(day, day, lid);
+  res.json({
+    a_livrer: await withItems(aLivrer),
+    livrees: await withItems(livrees),
+    reste: compte?.reste ?? 0,
+    nb: compte?.nb ?? 0,
+    frais: compte?.frais ?? 0,
+  });
+}));
+
 // ---------- Versements (le livreur rend l'argent) ----------
 
 app.post('/api/versements', admin, route(async (req, res) => {
@@ -304,7 +369,7 @@ app.post('/api/versements', admin, route(async (req, res) => {
   const amount = money(req.body.amount);
   if (amount === 0) fail('Le montant doit être plus grand que 0');
   await pool.query('INSERT INTO versements (livreur_id, amount, note, created_by) VALUES ($1, $2, $3, $4)',
-    [livreur.id, amount, text(req.body.note), req.session.user.id]);
+    [livreur.id, amount, text(req.body.note), req.user.id]);
   res.json({ ok: true });
 }));
 
@@ -315,7 +380,7 @@ app.delete('/api/versements/:id', admin, route(async (req, res) => {
 
 // ---------- Commandes ----------
 
-app.post('/api/orders', auth, route(async (req, res) => {
+app.post('/api/orders', staff, route(async (req, res) => {
   const { type, items } = req.body;
   if (!['surplace', 'emporter', 'livraison'].includes(type)) fail('Type de commande invalide');
   if (!Array.isArray(items) || items.length === 0 || items.length > 100) fail('La commande est vide');
@@ -348,7 +413,7 @@ app.post('/api/orders', auth, route(async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`, [
       type, livreurId, text(req.body.client_name, 60), text(req.body.client_phone, 30),
       text(req.body.address), text(req.body.note), food, fee,
-      type === 'livraison' ? 'en_cours' : 'terminee', req.session.user.id,
+      type === 'livraison' ? 'en_cours' : 'terminee', req.user.id,
     ]);
     for (const l of lines) {
       await client.query('INSERT INTO order_items (order_id, product_id, name, price, qty) VALUES ($1, $2, $3, $4, $5)',
@@ -357,36 +422,51 @@ app.post('/api/orders', auth, route(async (req, res) => {
     return rows[0].id;
   });
 
-  res.json({ id: orderId, food_total: food, delivery_fee: fee });
+  res.json(await getOrder(orderId));
 }));
 
-app.get('/api/orders', auth, route(async (req, res) => {
-  const [from, to] = await period(req);
-  const orders = await all(`
-    SELECT o.*, l.name AS livreur_name, u.username AS created_by_name
-    FROM orders o
-    LEFT JOIN livreurs l ON l.id = o.livreur_id
-    LEFT JOIN users u ON u.id = o.created_by
-    WHERE o.created_at::date BETWEEN $1 AND $2
-    ORDER BY o.id DESC`, [from, to]);
+const ORDER_SELECT = `
+  SELECT o.*, l.name AS livreur_name, u.username AS created_by_name
+  FROM orders o
+  LEFT JOIN livreurs l ON l.id = o.livreur_id
+  LEFT JOIN users u ON u.id = o.created_by`;
 
+// Ajoute les articles à chaque commande (une seule requête)
+async function withItems(orders) {
   const items = orders.length
     ? await all('SELECT * FROM order_items WHERE order_id = ANY($1::int[]) ORDER BY id', [orders.map(o => o.id)])
     : [];
   orders.forEach(o => { o.items = items.filter(i => i.order_id === o.id); });
-  res.json(orders);
+  return orders;
+}
+
+async function getOrder(orderId) {
+  const [order] = await withItems(await all(`${ORDER_SELECT} WHERE o.id = $1`, [orderId]));
+  return order;
+}
+
+app.get('/api/orders', staff, route(async (req, res) => {
+  const [from, to] = await period(req);
+  const orders = await all(`${ORDER_SELECT}
+    WHERE o.created_at::date BETWEEN $1 AND $2
+    ORDER BY o.id DESC`, [from, to]);
+
+  res.json(await withItems(orders));
 }));
 
-// en_cours → livree : tout le monde. Annuler : admin seulement (anti-triche).
+// en_cours → livree : caisse ou le livreur de la commande. Annuler : admin seulement (anti-triche).
 app.patch('/api/orders/:id/status', auth, route(async (req, res) => {
   const order = await one('SELECT * FROM orders WHERE id = $1', [id(req.params.id)]);
   if (!order) fail('Commande introuvable', 404);
   const { status } = req.body;
+  if (req.user.role === 'livreur' && (order.livreur_id !== req.user.livreur_id || status !== 'livree')) {
+    fail('Accès refusé', 403);
+  }
 
   if (status === 'livree') {
     if (order.status !== 'en_cours') fail("Cette commande n'est pas en cours de livraison");
   } else if (status === 'annulee') {
-    if (req.session.user.role !== 'admin') fail("Seul l'admin peut annuler une commande", 403);
+    if (req.user.role !== 'admin') fail("Seul l'admin peut annuler une commande", 403);
     if (order.status === 'annulee') fail('Déjà annulée');
   } else {
     fail('Statut invalide');

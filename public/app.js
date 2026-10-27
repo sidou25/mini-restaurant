@@ -6,7 +6,8 @@ const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const da = n => (Number(n) || 0).toLocaleString('fr-FR') + ' DA';
+const num = n => (Number(n) || 0).toLocaleString('fr-FR');
+const da = n => num(n) + ' DA';
 
 // Date locale au format AAAA-MM-JJ
 function ymd(d = new Date()) {
@@ -17,9 +18,22 @@ function ymd(d = new Date()) {
 const addDays = (n, d = new Date()) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const hour = s => s.slice(11, 16);
 const dateFr = s => s.slice(8, 10) + '/' + s.slice(5, 7) + ' ' + hour(s);
+const dayFr = s => s.slice(8, 10) + '/' + s.slice(5, 7) + '/' + s.slice(0, 4);
+const plural = (n, word) => `${n} ${word}${n > 1 ? 's' : ''}`;
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const TYPES = { surplace: 'Sur place', emporter: 'À emporter', livraison: 'Livraison' };
-const STATUS = { terminee: 'Payée', en_cours: 'En livraison', livree: 'Livrée', annulee: 'Annulée' };
+const TYPE_ICONS = { surplace: '🪑', emporter: '🛍️', livraison: '🛵' };
+const STATUS = { terminee: '✓ Payée', en_cours: '🛵 En livraison', livree: '✓ Livrée', annulee: 'Annulée' };
+
+// Une image pour chaque produit, devinée depuis son nom puis sa catégorie
+const EMOJIS = [
+  [/burger/i, '🍔'], [/pizza/i, '🍕'], [/tacos?/i, '🌮'], [/sandwich|panini|chawarma|shawarma|kebab/i, '🥪'],
+  [/frite/i, '🍟'], [/poulet|chicken|nugget|wings/i, '🍗'], [/salade/i, '🥗'],
+  [/dessert|gâteau|gateau|tiramisu|glace|crêpe|crepe/i, '🍰'], [/café|cafe|thé\b/i, '☕'],
+  [/\beau\b/i, '💧'], [/jus|boisson|canette|soda|coca|hamoud/i, '🥤'],
+];
+const emojiOf = p => (EMOJIS.find(([r]) => r.test(p.name)) || EMOJIS.find(([r]) => r.test(p.category)) || [0, '🍽️'])[1];
 
 async function api(url, { method = 'GET', body } = {}) {
   const res = await fetch(url, {
@@ -42,7 +56,7 @@ function toast(msg, bad = false) {
   t.textContent = msg;
   t.className = 'toast show' + (bad ? ' bad' : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
 // Lance une action et affiche l'erreur s'il y en a une
@@ -52,7 +66,7 @@ async function attempt(fn) {
 
 function openModal(html, wide = false) {
   const box = $('#modal-box');
-  box.className = 'card modal-box' + (wide ? ' wide' : '');
+  box.className = 'modal-box' + (wide ? ' wide' : '');
   box.innerHTML = html;
   $('#modal').classList.remove('hidden');
   $$('[data-close]', box).forEach(b => b.onclick = closeModal);
@@ -63,20 +77,53 @@ function closeModal() { $('#modal').classList.add('hidden'); }
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
+function confirmer(message, onYes, yesLabel = 'Oui') {
+  const box = openModal(`
+    <h2>Confirmer</h2>
+    <p>${message}</p>
+    <div class="modal-actions">
+      <button class="btn" data-close>Non</button>
+      <button class="btn primary" id="yes">${yesLabel}</button>
+    </div>`);
+  $('#yes', box).onclick = () => attempt(async () => { await onYes(); closeModal(); });
+}
+
+// Petit rebond quand un chiffre change
+function bump(el) {
+  if (!el) return;
+  el.classList.remove('bump');
+  void el.offsetWidth;
+  el.classList.add('bump');
+}
+
 // ---------- État ----------
 
 const S = {
   me: null,
-  settings: { restaurant_name: 'Mini Restaurant', delivery_fee: 200 },
+  settings: { restaurant_name: 'Brother', delivery_fee: 200 },
   products: [],
   livreurs: [],
   cart: {},          // { productId: quantité }
   type: 'surplace',
   form: {},          // champs de la livraison
+  cat: 'Tout',
+  lastAdded: null,
+  lastTotal: 0,
   ordersDate: ymd(),
+  ordersFilter: 'toutes',
   dash: { from: ymd(), to: ymd(), preset: 'jour' },
+  seen: null,        // commandes déjà vues par le livreur
+  poll: null,
 };
 const isAdmin = () => S.me?.role === 'admin';
+const isLivreur = () => S.me?.role === 'livreur';
+
+function getAutoPrint() {
+  try { return localStorage.getItem('autoPrint') === '1'; } catch { return false; }
+}
+function setAutoPrint(on) {
+  try { localStorage.setItem('autoPrint', on ? '1' : '0'); } catch { /* navigateur privé */ }
+}
 
 // ---------- Connexion ----------
 
@@ -84,15 +131,14 @@ let setupMode = false;
 
 function showAuth(setup, needsCode = false) {
   setupMode = setup;
-  $('#code-field').classList.toggle('hidden', !(setup && needsCode));
-  $('[name=code]').required = setup && needsCode;
+  clearInterval(S.poll);
   $('#shell').classList.add('hidden');
   $('#auth').classList.remove('hidden');
-  $('#auth-title').textContent = setup ? 'Bienvenue 👋' : 'Connexion';
-  $('#auth-help').textContent = setup
-    ? 'Premier lancement : crée le compte du patron (admin).'
-    : '';
-  $('#auth-btn').textContent = setup ? 'Créer le compte admin' : 'Se connecter';
+  $('#code-field').classList.toggle('hidden', !(setup && needsCode));
+  $('[name=code]').required = setup && needsCode;
+  $('#auth-title').textContent = setup ? 'Bienvenue' : 'Connexion';
+  $('#auth-help').textContent = setup ? 'Premier lancement : crée le compte du patron.' : '';
+  $('#auth-btn').textContent = setup ? 'Créer le compte du patron' : 'Se connecter';
   $('#auth-error').textContent = '';
 }
 
@@ -114,6 +160,7 @@ $('#auth-form').addEventListener('submit', async e => {
 $('#logout').onclick = async () => {
   await api('/api/logout', { method: 'POST' }).catch(() => {});
   S.me = null;
+  S.seen = null;
   showAuth(false);
 };
 
@@ -129,73 +176,160 @@ async function boot() {
 async function start() {
   $('#auth').classList.add('hidden');
   $('#shell').classList.remove('hidden');
-  $('#me-name').textContent = `${S.me.username} (${S.me.role})`;
+  $('#me-name').textContent = isLivreur() ? `🛵 ${S.me.livreur_name}` : S.me.username;
   await loadBase();
   renderNav();
   router();
 }
 
 async function loadBase() {
+  const staff = !isLivreur();
   [S.settings, S.products, S.livreurs] = await Promise.all([
-    api('/api/settings'), api('/api/products'), api('/api/livreurs'),
+    api('/api/settings'),
+    staff ? api('/api/products') : [],
+    staff ? api('/api/livreurs') : [],
   ]);
-  $('#resto-name').textContent = S.settings.restaurant_name;
-  document.title = S.settings.restaurant_name;
+  const name = S.settings.restaurant_name || 'Brother';
+  $('#resto-name').textContent = name.toUpperCase();
+  $('#logo-mark').textContent = name.trim()[0]?.toUpperCase() || 'B';
+  document.title = name;
 }
 
 // ---------- Navigation ----------
 
 const PAGES = [
-  { id: 'caisse', label: '🍔 Caisse', render: renderCaisse },
-  { id: 'commandes', label: '🧾 Commandes', render: renderCommandes },
-  { id: 'livreurs', label: '🛵 Livreurs', render: renderLivreurs, admin: true },
-  { id: 'dashboard', label: '📊 Tableau de bord', render: renderDashboard, admin: true },
-  { id: 'produits', label: '📋 Produits', render: renderProduits, admin: true },
-  { id: 'parametres', label: '⚙️ Paramètres', render: renderParametres },
+  { id: 'accueil', ico: '🏠', label: 'Accueil', render: renderAccueil, roles: ['admin'] },
+  { id: 'caisse', ico: '🍔', label: 'Caisse', render: renderCaisse, roles: ['admin', 'caissier'] },
+  { id: 'commandes', ico: '🧾', label: 'Commandes', render: renderCommandes, roles: ['admin', 'caissier'] },
+  { id: 'livreurs', ico: '🛵', label: 'Livreurs', render: renderLivreurs, roles: ['admin'] },
+  { id: 'menu', ico: '📋', label: 'Menu', render: renderMenu, roles: ['admin'] },
+  { id: 'reglages', ico: '⚙️', label: 'Réglages', render: renderReglages, roles: ['admin', 'caissier'] },
+  { id: 'livraisons', ico: '🛵', label: 'Mes livraisons', render: renderLivreurPage, roles: ['livreur'] },
 ];
-const visiblePages = () => PAGES.filter(p => !p.admin || isAdmin());
+const visiblePages = () => PAGES.filter(p => p.roles.includes(S.me.role));
 
 function renderNav() {
-  $('#nav').innerHTML = visiblePages().map(p => `<a href="#${p.id}" data-page="${p.id}">${p.label}</a>`).join('');
+  const pages = visiblePages();
+  $('#nav').innerHTML = pages.map(p =>
+    `<a href="#${p.id}" data-page="${p.id}"><span class="ico">${p.ico}</span><span>${p.label}</span></a>`).join('');
+  $('#nav').classList.toggle('single', pages.length < 2);
+  document.body.classList.toggle('has-nav', pages.length > 1);
 }
 
 function router() {
   if (!S.me) return;
+  clearInterval(S.poll);
   const id = location.hash.slice(1);
   const page = visiblePages().find(p => p.id === id) || visiblePages()[0];
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.page === page.id));
-  attempt(() => page.render($('#page')));
+  const main = $('#page');
+  // relance l'animation d'entrée de page
+  main.style.animation = 'none';
+  void main.offsetWidth;
+  main.style.animation = '';
+  attempt(() => page.render(main));
 }
 window.addEventListener('hashchange', router);
 
 // ---------- Caisse ----------
 
 function renderCaisse(el) {
-  const cats = {};
-  S.products.forEach(p => (cats[p.category] ||= []).push(p));
+  const cats = ['Tout', ...new Set(S.products.map(p => p.category))];
+  if (!cats.includes(S.cat)) S.cat = 'Tout';
 
   el.innerHTML = `
     <div class="caisse">
       <section>
-        ${Object.entries(cats).map(([cat, ps]) => `
-          <h3>${esc(cat)}</h3>
-          <div class="grid">
-            ${ps.map(p => `
-              <button class="prod" data-id="${p.id}">
-                <span>${esc(p.name)}</span><b>${da(p.price)}</b>
-              </button>`).join('')}
-          </div>`).join('') || '<p class="muted">Aucun produit. Ajoute ton menu dans la page Produits.</p>'}
+        <div class="menu-head">
+          <div class="chips" id="chips">
+            ${cats.map(c => `<button class="chip ${c === S.cat ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}
+          </div>
+        </div>
+        <div class="grid" id="grid"></div>
       </section>
-      <aside class="card panier" id="panier"></aside>
+      <aside class="panier" id="panier"></aside>
     </div>
     <button class="btn primary go-panier hidden" id="go-panier"></button>`;
-  $('#go-panier', el).onclick = () => $('#panier').scrollIntoView({ behavior: 'smooth' });
 
-  $$('.prod', el).forEach(b => b.onclick = () => {
-    S.cart[b.dataset.id] = (S.cart[b.dataset.id] || 0) + 1;
-    renderPanier();
+  $$('[data-cat]', el).forEach(b => b.onclick = () => {
+    S.cat = b.dataset.cat;
+    $$('[data-cat]', el).forEach(x => x.classList.toggle('on', x === b));
+    renderGrid();
   });
+  $('#go-panier', el).onclick = () => $('#panier').scrollIntoView({ behavior: 'smooth' });
+  renderGrid();
   renderPanier();
+}
+
+function renderGrid() {
+  const list = S.products.filter(p => S.cat === 'Tout' || p.category === S.cat);
+  $('#grid').innerHTML = list.map((p, i) => `
+    <button class="prod" data-id="${p.id}" style="animation-delay:${Math.min(i, 12) * 25}ms">
+      <span class="emoji">${emojiOf(p)}</span>
+      <span class="name">${esc(p.name)}</span>
+      <span class="price">${da(p.price)}</span>
+    </button>`).join('') || '<p class="muted">Aucun produit. Le patron les ajoute dans la page Menu.</p>';
+  $$('.prod').forEach(b => b.onclick = e => addToCart(b, e));
+  updateCounts();
+}
+
+function addToCart(btn, ev) {
+  const pid = btn.dataset.id;
+  S.cart[pid] = (S.cart[pid] || 0) + 1;
+  S.lastAdded = pid;
+  // éclair rouge à l'endroit du clic
+  const r = btn.getBoundingClientRect();
+  btn.style.setProperty('--x', (ev.clientX ? ev.clientX - r.left : r.width / 2) + 'px');
+  btn.style.setProperty('--y', (ev.clientY ? ev.clientY - r.top : r.height / 2) + 'px');
+  btn.classList.remove('flash');
+  void btn.offsetWidth;
+  btn.classList.add('flash');
+  renderPanier();
+  flyToCart(btn);
+}
+
+// L'image du produit vole jusqu'à la commande
+function flyToCart(btn) {
+  if (reducedMotion()) return;
+  const emoji = btn.querySelector('.emoji');
+  const from = emoji.getBoundingClientRect();
+  const go = $('#go-panier');
+  const target = go && getComputedStyle(go).display !== 'none' ? go : $('#panier-title');
+  if (!target) return;
+  const to = target.getBoundingClientRect();
+  const fly = document.createElement('div');
+  fly.className = 'fly';
+  fly.textContent = emoji.textContent;
+  fly.style.left = from.left + 'px';
+  fly.style.top = from.top + 'px';
+  document.body.appendChild(fly);
+  const dx = to.left + to.width / 2 - from.left - 17;
+  const dy = to.top + to.height / 2 - from.top - 17;
+  fly.animate([
+    { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+    { transform: `translate(${dx * 0.5}px, ${dy * 0.5 - 90}px) scale(1.25) rotate(-12deg)`, opacity: 1, offset: 0.5 },
+    { transform: `translate(${dx}px, ${dy}px) scale(.3)`, opacity: 0.2 },
+  ], { duration: 650, easing: 'cubic-bezier(.45,0,.55,1)' }).onfinish = () => fly.remove();
+}
+
+function updateCounts() {
+  $$('.prod').forEach(b => {
+    const q = S.cart[b.dataset.id] || 0;
+    let c = b.querySelector('.count');
+    b.classList.toggle('in-cart', q > 0);
+    if (!q) return c?.remove();
+    if (!c) {
+      c = document.createElement('span');
+      c.className = 'count';
+      b.appendChild(c);
+    }
+    if (c.textContent !== String(q)) {
+      c.textContent = q;
+      c.classList.remove('pop');
+      void c.offsetWidth;
+      c.classList.add('pop');
+    }
+  });
 }
 
 function cartLines() {
@@ -210,69 +344,68 @@ function renderPanier() {
   const lines = cartLines();
   const isLiv = S.type === 'livraison';
   if (S.form.fee === undefined) S.form.fee = S.settings.delivery_fee;
-
-  // Petit compteur sur les boutons produits
-  $$('.prod').forEach(b => {
-    b.querySelector('.count')?.remove();
-    const q = S.cart[b.dataset.id];
-    if (q) b.insertAdjacentHTML('afterbegin', `<span class="count">× ${q}</span>`);
-  });
+  updateCounts();
 
   el.innerHTML = `
-    <h2>Nouvelle commande</h2>
-    <div class="seg">
-      ${Object.entries(TYPES).map(([v, l]) =>
-        `<button data-type="${v}" class="${S.type === v ? 'on' : ''}">${l}</button>`).join('')}
+    <div class="panier-head">
+      <h2 id="panier-title"><span class="display">Commande</span>
+        ${lines.length ? `<button class="btn ghost small" id="vider">Vider</button>` : ''}</h2>
+      <div class="seg">
+        ${Object.entries(TYPES).map(([v, l]) =>
+          `<button data-type="${v}" class="${S.type === v ? 'on' : ''}"><span class="t-ico">${TYPE_ICONS[v]}</span>${l}</button>`).join('')}
+      </div>
     </div>
 
-    <div class="lines">
+    <div class="panier-body">
       ${lines.map(l => `
-        <div class="line">
-          <span>${esc(l.p.name)}</span>
+        <div class="line ${l.p.id == S.lastAdded && l.qty === 1 ? 'new' : ''}">
+          <span class="lname">${emojiOf(l.p)} ${esc(l.p.name)}<small>${da(l.p.price)}</small></span>
           <div class="qty">
             <button data-minus="${l.p.id}" aria-label="Moins">−</button>
             <b>${l.qty}</b>
             <button data-plus="${l.p.id}" aria-label="Plus">+</button>
           </div>
           <span>${da(l.p.price * l.qty)}</span>
-        </div>`).join('') || '<p class="muted">Clique sur un produit pour l\'ajouter.</p>'}
+        </div>`).join('') || `
+        <div class="empty"><span class="big-emoji">🍔</span>Touche un produit pour l'ajouter</div>`}
     </div>
 
-    ${isLiv ? `
-      <div class="liv">
-        <div class="liv-grid">
-          <label>Livreur *
-            <select data-f="livreur_id">
-              <option value="">— choisir —</option>
-              ${S.livreurs.map(l => `<option value="${l.id}" ${S.form.livreur_id == l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
-            </select>
-          </label>
-          <label>Frais de livraison (DA)
-            <input data-f="fee" type="number" min="0" step="10" value="${esc(S.form.fee)}">
-          </label>
-          <label>Client <input data-f="client_name" value="${esc(S.form.client_name)}" placeholder="Nom"></label>
-          <label>Téléphone <input data-f="client_phone" type="tel" value="${esc(S.form.client_phone)}"></label>
-        </div>
-        <label>Adresse <input data-f="address" value="${esc(S.form.address)}"></label>
-        ${S.livreurs.length ? '' : '<p class="error">Aucun livreur. Ajoute-le dans la page Livreurs.</p>'}
-      </div>` : ''}
-
-    <label>Note <input data-f="note" value="${esc(S.form.note)}" placeholder="ex : sans oignon"></label>
-    <div class="totaux" id="totaux"></div>
-    <div class="form-row">
-      <button class="btn ghost" id="vider" ${lines.length ? '' : 'disabled'}>Vider</button>
-      <button class="btn primary" style="flex:1;padding:13px;font-size:16px" id="valider" ${lines.length ? '' : 'disabled'}>Valider la commande</button>
+    <div class="panier-foot">
+      ${isLiv ? `
+        <div class="liv">
+          <div class="liv-grid">
+            <label>Livreur *
+              <select data-f="livreur_id">
+                <option value="">— choisir —</option>
+                ${S.livreurs.map(l => `<option value="${l.id}" ${S.form.livreur_id == l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+              </select>
+            </label>
+            <label>Frais de livraison
+              <input data-f="fee" type="number" min="0" step="10" inputmode="numeric" value="${esc(S.form.fee)}">
+            </label>
+            <label>Client <input data-f="client_name" value="${esc(S.form.client_name)}" placeholder="Nom"></label>
+            <label>Téléphone <input data-f="client_phone" type="tel" value="${esc(S.form.client_phone)}"></label>
+          </div>
+          <label>Adresse <input data-f="address" value="${esc(S.form.address)}"></label>
+          ${S.livreurs.length ? '' : '<p class="error" style="margin-bottom:10px">Aucun livreur. Le patron l\'ajoute dans la page Livreurs.</p>'}
+        </div>` : ''}
+      <label>Note <input data-f="note" value="${esc(S.form.note)}" placeholder="ex : sans oignon"></label>
+      <div class="totaux" id="totaux"></div>
+      <label class="check-row"><input type="checkbox" id="auto-print" ${getAutoPrint() ? 'checked' : ''}> 🖨️ Imprimer le bon automatiquement</label>
+      <button class="btn primary big" id="valider" ${lines.length ? '' : 'disabled'}>Valider la commande</button>
     </div>`;
 
   $$('[data-type]', el).forEach(b => b.onclick = () => { S.type = b.dataset.type; renderPanier(); });
-  $$('[data-plus]', el).forEach(b => b.onclick = () => { S.cart[b.dataset.plus]++; renderPanier(); });
+  $$('[data-plus]', el).forEach(b => b.onclick = () => { S.cart[b.dataset.plus]++; S.lastAdded = null; renderPanier(); });
   $$('[data-minus]', el).forEach(b => b.onclick = () => {
     if (--S.cart[b.dataset.minus] <= 0) delete S.cart[b.dataset.minus];
+    S.lastAdded = null;
     renderPanier();
   });
   // On garde ce qui est tapé sans tout redessiner
   $$('[data-f]', el).forEach(i => i.oninput = () => { S.form[i.dataset.f] = i.value; renderTotaux(); });
-  $('#vider', el).onclick = () => { S.cart = {}; renderPanier(); };
+  $('#vider', el)?.addEventListener('click', () => { S.cart = {}; renderPanier(); });
+  $('#auto-print', el).onchange = e => setAutoPrint(e.target.checked);
   $('#valider', el).onclick = validerCommande;
   renderTotaux();
 }
@@ -280,29 +413,31 @@ function renderPanier() {
 function renderTotaux() {
   const lines = cartLines();
   const food = lines.reduce((s, l) => s + l.p.price * l.qty, 0);
+  const isLiv = S.type === 'livraison';
+  const fee = isLiv && lines.length ? Number(S.form.fee) || 0 : 0;
+
   // Bouton flottant (téléphone) pour descendre jusqu'à la commande
   const go = $('#go-panier');
   const n = lines.reduce((s, l) => s + l.qty, 0);
   go.classList.toggle('hidden', n === 0);
-  go.textContent = `Voir la commande (${n}) · ${da(food)}`;
-  const el = $('#totaux');
-  if (S.type !== 'livraison') {
-    el.innerHTML = `<div class="tot big"><span>Total</span><span>${da(food)}</span></div>`;
-    return;
-  }
-  const fee = Number(S.form.fee) || 0;
-  el.innerHTML = `
-    <div class="tot"><span>Nourriture</span><span>${da(food)}</span></div>
-    <div class="tot"><span>Livraison (pour le livreur)</span><span>${da(fee)}</span></div>
-    <div class="tot big"><span>Le client paie</span><span>${da(food + fee)}</span></div>
-    <div class="tot warn"><span>🛵 Le livreur doit rendre</span><span>${da(food)}</span></div>`;
+  go.innerHTML = `<span>🧾 Voir la commande (${n})</span><b>${da(food + fee)}</b>`;
+
+  $('#totaux').innerHTML = isLiv ? `
+    <div class="tot"><span>Nourriture</span><b>${da(food)}</b></div>
+    <div class="tot"><span>Livraison (pour le livreur)</span><b>${da(fee)}</b></div>
+    <div class="tot big"><span>Le client paie</span><span class="amount" id="total">${da(food + fee)}</span></div>
+    <div class="tot warn"><span>🛵 Le livreur doit rendre</span><span>${da(food)}</span></div>` : `
+    <div class="tot big"><span>Total</span><span class="amount" id="total">${da(food)}</span></div>`;
+
+  if (food + fee !== S.lastTotal) bump($('#total'));
+  S.lastTotal = food + fee;
 }
 
 async function validerCommande() {
   const btn = $('#valider');
   btn.disabled = true;
   try {
-    const r = await api('/api/orders', {
+    const order = await api('/api/orders', {
       method: 'POST',
       body: {
         type: S.type,
@@ -315,14 +450,61 @@ async function validerCommande() {
         note: S.form.note,
       },
     });
-    toast(`✅ Commande n°${r.id} enregistrée — ${da(r.food_total + r.delivery_fee)}`);
     S.cart = {};
     S.form = {};
+    S.lastAdded = null;
     renderPanier();
+    showDone(order);
+    if (getAutoPrint()) setTimeout(() => printTicket(order), 500);
   } catch (e) {
     toast(e.message, true);
     btn.disabled = false;
   }
+}
+
+function showDone(o) {
+  const total = o.food_total + o.delivery_fee;
+  const box = openModal(`
+    <div class="done">
+      <div class="tick"><svg viewBox="0 0 48 48"><path d="M12 25 l8 8 l16 -18"/></svg></div>
+      <h2>Commande n°${o.id}</h2>
+      <div class="amount">${da(total)}</div>
+      <p class="muted">${TYPE_ICONS[o.type]} ${TYPES[o.type]}${o.type === 'livraison'
+        ? ` · <b style="color:var(--amber)">${esc(o.livreur_name)} doit rendre ${da(o.food_total)}</b>` : ''}</p>
+      <div class="modal-actions" style="justify-content:center">
+        <button class="btn" id="print">🖨️ Imprimer le bon</button>
+        <button class="btn primary" data-close>Nouvelle commande</button>
+      </div>
+    </div>`);
+  $('#print', box).onclick = () => printTicket(o);
+  $('[data-close]', box).focus();
+}
+
+// ---------- Bon de commande (ticket) ----------
+
+function printTicket(o) {
+  const isLiv = o.type === 'livraison';
+  const row = (a, b) => `<div class="t-row"><span>${a}</span><span>${b}</span></div>`;
+  $('#ticket').innerHTML = `
+    <div class="t-brand">${esc((S.settings.restaurant_name || 'Brother').toUpperCase())}</div>
+    <div class="t-center">${dayFr(o.created_at)} ${hour(o.created_at)}</div>
+    <hr>
+    <div class="t-center t-big">COMMANDE N° ${o.id}</div>
+    <div class="t-center">${TYPES[o.type].toUpperCase()}</div>
+    <hr>
+    ${o.items.map(i => row(`${i.qty} x ${esc(i.name)}`, num(i.qty * i.price))).join('')}
+    <hr>
+    ${isLiv ? row('Sous-total', num(o.food_total)) + row('Livraison', num(o.delivery_fee)) : ''}
+    <div class="t-row t-total"><span>TOTAL</span><span>${da(o.food_total + o.delivery_fee)}</span></div>
+    ${o.note ? `<hr><div><b>Note :</b> ${esc(o.note)}</div>` : ''}
+    ${isLiv ? `<hr>
+      ${o.client_name ? `<div>Client : ${esc(o.client_name)}</div>` : ''}
+      ${o.client_phone ? `<div>Tél : ${esc(o.client_phone)}</div>` : ''}
+      ${o.address ? `<div>Adresse : ${esc(o.address)}</div>` : ''}
+      <div>Livreur : ${esc(o.livreur_name)}</div>` : ''}
+    <hr>
+    <div class="t-center">Merci et bon appétit !</div>`;
+  window.print();
 }
 
 // ---------- Commandes ----------
@@ -331,107 +513,236 @@ async function renderCommandes(el) {
   const orders = await api(`/api/orders?from=${S.ordersDate}&to=${S.ordersDate}`);
   const ok = orders.filter(o => o.status !== 'annulee');
   const total = ok.reduce((s, o) => s + o.food_total, 0);
-  const enCours = ok.filter(o => o.status === 'en_cours').length;
+  const enCours = ok.filter(o => o.status === 'en_cours');
+  const shown = S.ordersFilter === 'livraison' ? enCours : orders;
 
   el.innerHTML = `
-    <div class="section-title">
-      <h2>Commandes</h2>
-      <div class="toolbar" style="margin:0">
+    <div class="page-head">
+      <div>
+        <h1>Commandes</h1>
+        <div class="sub">${plural(ok.length, 'commande')} · ${da(total)} de ventes</div>
+      </div>
+      <div class="toolbar">
         <label>Jour <input type="date" id="o-date" value="${S.ordersDate}"></label>
         <button class="btn" id="o-today">Aujourd'hui</button>
       </div>
     </div>
-    <div class="kpis">
-      <div class="card kpi"><div class="label">Commandes</div><div class="value">${ok.length}</div></div>
-      <div class="card kpi"><div class="label">Ventes (nourriture)</div><div class="value">${da(total)}</div></div>
-      <div class="card kpi"><div class="label">En livraison maintenant</div><div class="value">${enCours}</div></div>
+    <div class="chips" style="margin-bottom:16px">
+      <button class="chip ${S.ordersFilter === 'toutes' ? 'on' : ''}" data-filter="toutes">Toutes (${orders.length})</button>
+      <button class="chip ${S.ordersFilter === 'livraison' ? 'on' : ''}" data-filter="livraison">🛵 En livraison (${enCours.length})</button>
     </div>
-    <div class="card table-wrap" style="padding:0">
-      <table>
-        <thead><tr>
-          <th>N°</th><th>Heure</th><th>Type</th><th>Articles</th>
-          <th class="num">Nourriture</th><th class="num">Livraison</th><th>Statut</th><th></th>
-        </tr></thead>
-        <tbody>
-          ${orders.map(o => `
-            <tr class="${o.status}">
-              <td><b>${o.id}</b></td>
-              <td>${hour(o.created_at)}</td>
-              <td>
-                <span class="badge type">${TYPES[o.type]}</span>
-                ${o.livreur_name ? `<div class="items">🛵 ${esc(o.livreur_name)}</div>` : ''}
-                ${o.client_name || o.address ? `<div class="items">${esc(o.client_name)} ${esc(o.client_phone)}<br>${esc(o.address)}</div>` : ''}
-              </td>
-              <td class="items">
-                ${o.items.map(i => `${i.qty} × ${esc(i.name)}`).join('<br>')}
-                ${o.note ? `<br><i>« ${esc(o.note)} »</i>` : ''}
-              </td>
-              <td class="num"><b>${da(o.food_total)}</b></td>
-              <td class="num">${o.type === 'livraison' ? da(o.delivery_fee) : '—'}</td>
-              <td><span class="badge ${o.status}">${STATUS[o.status]}</span></td>
-              <td><div class="actions">
-                ${o.status === 'en_cours' ? `<button class="btn small green" data-livree="${o.id}">Livrée</button>` : ''}
-                ${isAdmin() && o.status !== 'annulee' ? `<button class="btn small danger" data-annuler="${o.id}">Annuler</button>` : ''}
-              </div></td>
-            </tr>`).join('') || '<tr><td colspan="8" class="muted">Aucune commande ce jour-là.</td></tr>'}
-        </tbody>
-      </table>
+    <div class="orders">
+      ${shown.map((o, i) => orderCard(o, i)).join('') || '<div class="card empty"><span class="big-emoji">🧾</span>Aucune commande ici.</div>'}
     </div>`;
 
+  const byId = id => orders.find(o => o.id == id);
   $('#o-date', el).onchange = e => { S.ordersDate = e.target.value || ymd(); renderCommandes(el); };
   $('#o-today', el).onclick = () => { S.ordersDate = ymd(); renderCommandes(el); };
+  $$('[data-filter]', el).forEach(b => b.onclick = () => { S.ordersFilter = b.dataset.filter; renderCommandes(el); });
+  $$('[data-print]', el).forEach(b => b.onclick = () => printTicket(byId(b.dataset.print)));
   $$('[data-livree]', el).forEach(b => b.onclick = () => attempt(async () => {
     await api(`/api/orders/${b.dataset.livree}/status`, { method: 'PATCH', body: { status: 'livree' } });
-    toast('Commande marquée livrée');
+    toast('✓ Commande marquée livrée');
     renderCommandes(el);
   }));
   $$('[data-annuler]', el).forEach(b => b.onclick = () => confirmer(
-    `Annuler la commande n°${b.dataset.annuler} ? Elle ne comptera plus dans les ventes ni dans la dette du livreur.`,
+    `Annuler la commande n°${b.dataset.annuler} ? Elle ne comptera plus dans les ventes ni dans ce que doit le livreur.`,
     async () => {
       await api(`/api/orders/${b.dataset.annuler}/status`, { method: 'PATCH', body: { status: 'annulee' } });
       toast('Commande annulée');
       renderCommandes(el);
-    }));
+    }, 'Oui, annuler'));
 }
 
-function confirmer(message, onYes) {
-  const box = openModal(`
-    <h2>Confirmer</h2>
-    <p>${esc(message)}</p>
-    <div class="modal-actions">
-      <button class="btn" data-close>Non</button>
-      <button class="btn primary" id="yes">Oui</button>
-    </div>`);
-  $('#yes', box).onclick = () => attempt(async () => { await onYes(); closeModal(); });
+function orderCard(o, i) {
+  return `
+    <div class="order ${o.status}" style="animation-delay:${Math.min(i, 10) * 30}ms">
+      <div class="order-top">
+        <div class="order-num">N° ${o.id}<small>${hour(o.created_at)}</small></div>
+        <span class="badge ${o.status}">${STATUS[o.status]}</span>
+      </div>
+      <div><span class="badge type">${TYPE_ICONS[o.type]} ${TYPES[o.type]}</span></div>
+      <div class="order-items">
+        ${o.items.map(i => `<div><b>${i.qty}×</b> ${esc(i.name)}</div>`).join('')}
+        ${o.note ? `<div class="muted">« ${esc(o.note)} »</div>` : ''}
+      </div>
+      ${o.type === 'livraison' ? `
+        <div class="order-info">
+          🛵 <b style="color:var(--ink)">${esc(o.livreur_name)}</b> · frais ${da(o.delivery_fee)}
+          ${o.client_name || o.client_phone ? `<br>👤 ${esc(o.client_name)} ${esc(o.client_phone)}` : ''}
+          ${o.address ? `<br>📍 ${esc(o.address)}` : ''}
+        </div>` : ''}
+      <div class="order-sum">
+        <span class="muted">${o.type === 'livraison' ? 'Nourriture' : 'Total'}</span>
+        <span class="amount">${da(o.food_total)}</span>
+      </div>
+      <div class="actions">
+        <button class="btn small" data-print="${o.id}">🖨️ Bon</button>
+        ${o.status === 'en_cours' ? `<button class="btn small green" data-livree="${o.id}">✓ Livrée</button>` : ''}
+        ${isAdmin() && o.status !== 'annulee' ? `<button class="btn small danger" data-annuler="${o.id}">Annuler</button>` : ''}
+      </div>
+    </div>`;
 }
 
-// ---------- Livreurs ----------
+// ---------- Accueil du patron (simple) ----------
+
+const PRESETS = {
+  jour: { label: "Aujourd'hui", words: "aujourd'hui", range: () => [ymd(), ymd()] },
+  hier: { label: 'Hier', words: 'hier', range: () => [ymd(addDays(-1)), ymd(addDays(-1))] },
+  semaine: { label: '7 jours', words: 'ces 7 derniers jours', range: () => [ymd(addDays(-6)), ymd()] },
+  mois: {
+    label: 'Ce mois', words: 'ce mois-ci',
+    range: () => { const d = new Date(); return [ymd(new Date(d.getFullYear(), d.getMonth(), 1)), ymd()]; },
+  },
+};
+
+async function renderAccueil(el) {
+  const { from, to, preset } = S.dash;
+  const st = await api(`/api/stats?from=${from}&to=${to}`);
+  const t = st.totals;
+  const words = PRESETS[preset]?.words || `du ${dayFr(from)} au ${dayFr(to)}`;
+  const recu = t.caisse_directe + t.verse_livreurs;
+  const chez = st.chez_livreurs;
+  const today = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  el.innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="hello">Salam ${esc(S.me.username)} 👋 · ${today}</div>
+        <h1>Ton restaurant ${esc(words)}</h1>
+      </div>
+      <div class="seg">
+        ${Object.entries(PRESETS).map(([k, p]) => `<button data-preset="${k}" class="${preset === k ? 'on' : ''}">${p.label}</button>`).join('')}
+      </div>
+    </div>
+
+    <div class="big-cards">
+      <div class="big-card money">
+        <div class="icon">💰</div>
+        <div class="label">Tu as vendu</div>
+        <div class="value">${da(t.ventes)}</div>
+        <div class="explain">${plural(t.nb, 'commande')} ${esc(words)}</div>
+      </div>
+      <div class="big-card good">
+        <div class="icon">💵</div>
+        <div class="label">Argent reçu dans ta main</div>
+        <div class="value">${da(recu)}</div>
+        <div class="explain">${da(t.caisse_directe)} au comptoir + ${da(t.verse_livreurs)} rendus par les livreurs</div>
+      </div>
+      <div class="big-card ${chez > 0 ? 'alert' : 'good'}">
+        <div class="icon">🛵</div>
+        <div class="label">${chez > 0 ? 'Les livreurs te doivent' : 'Les livreurs ne te doivent rien'}</div>
+        <div class="value">${da(chez)}</div>
+        <div class="explain">${chez > 0 ? "C'est l'argent de ta nourriture encore dans leur poche." : 'Tout est rendu 👍'}</div>
+      </div>
+    </div>
+
+    <div class="section-title"><h2>Tes livreurs</h2><a class="btn small" href="#livreurs">Gérer</a></div>
+    <div class="people">
+      ${st.livreurs.map((l, i) => `
+        <div class="person ${l.reste > 0 ? 'owes' : ''}" style="animation-delay:${i * 50}ms">
+          <div class="avatar">${esc(l.name.trim()[0]?.toUpperCase())}</div>
+          <div class="who">
+            <b>${esc(l.name)}</b>
+            <div class="say">${l.reste > 0 ? `doit te rendre <b>${da(l.reste)}</b>`
+              : l.reste < 0 ? `a rendu ${da(-l.reste)} en trop` : '<span class="ok">✓ ne te doit rien</span>'}</div>
+            <div class="say">${plural(l.nb, 'livraison')} ${esc(words)}</div>
+          </div>
+          ${l.reste > 0 ? `<button class="btn primary" data-verser="${l.id}">💵 Il m'a donné</button>` : ''}
+        </div>`).join('') || '<div class="card empty">Pas encore de livreur. Ajoute-les dans « Livreurs ».</div>'}
+    </div>
+
+    <div class="section-title"><h2>Ce qui se vend le plus</h2></div>
+    <div class="top-list">
+      ${st.produits.slice(0, 5).map((p, i) => `
+        <div class="top-item">
+          <span class="rank">${['🥇', '🥈', '🥉', '4', '5'][i]}</span>
+          <span class="what">${esc(p.name)}</span>
+          <span class="how"><b>${p.qty}</b> vendus · ${da(p.montant)}</span>
+        </div>`).join('') || '<div class="card empty">Rien de vendu pour le moment.</div>'}
+    </div>
+
+    <details class="more">
+      <summary>📊 Plus de détails (pour vérifier les chiffres)</summary>
+      <div class="inner">
+        <div class="toolbar" style="margin-bottom:14px">
+          <label>Du <input type="date" id="d-from" value="${from}"></label>
+          <label>Au <input type="date" id="d-to" value="${to}"></label>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="label">Ventes sur place / à emporter</div><div class="value">${da(t.caisse_directe)}</div></div>
+          <div class="kpi"><div class="label">Ventes en livraison</div><div class="value">${da(t.ventes_livraison)}</div></div>
+          <div class="kpi"><div class="label">Frais gagnés par les livreurs</div><div class="value">${da(t.frais_livraison)}</div></div>
+          <div class="kpi"><div class="label">Sur place · À emporter · Livraison</div><div class="value">${t.nb_surplace} · ${t.nb_emporter} · ${t.nb_livraison}</div></div>
+          <div class="kpi"><div class="label">Commandes annulées</div><div class="value">${t.annulees}</div></div>
+        </div>
+        <div class="two">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Produit</th><th class="num">Qté</th><th class="num">Montant</th></tr></thead>
+              <tbody>${st.produits.map(p => `<tr><td>${esc(p.name)}</td><td class="num">${p.qty}</td><td class="num">${da(p.montant)}</td></tr>`).join('')
+                || '<tr><td colspan="3" class="muted">Aucune vente.</td></tr>'}</tbody>
+            </table>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Livreur</th><th class="num">Livr.</th><th class="num">Nourriture</th><th class="num">Frais</th><th class="num">Rendu</th><th class="num">Doit</th></tr></thead>
+              <tbody>${st.livreurs.map(l => `
+                <tr><td>${esc(l.name)}</td><td class="num">${l.nb}</td><td class="num">${da(l.ventes)}</td>
+                <td class="num">${da(l.frais)}</td><td class="num">${da(l.verse_periode)}</td>
+                <td class="num ${l.reste > 0 ? 'plus' : 'moins'}">${da(l.reste)}</td></tr>`).join('')
+                || '<tr><td colspan="6" class="muted">Aucun livreur.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </details>`;
+
+  $$('[data-preset]', el).forEach(b => b.onclick = () => {
+    const [f, t2] = PRESETS[b.dataset.preset].range();
+    S.dash = { from: f, to: t2, preset: b.dataset.preset };
+    renderAccueil(el);
+  });
+  const custom = () => {
+    const f = $('#d-from', el).value, t2 = $('#d-to', el).value;
+    if (!f || !t2) return;
+    S.dash = { from: f <= t2 ? f : t2, to: f <= t2 ? t2 : f, preset: '' };
+    renderAccueil(el);
+  };
+  $('#d-from', el).onchange = custom;
+  $('#d-to', el).onchange = custom;
+  $$('[data-verser]', el).forEach(b => b.onclick = () =>
+    verser(st.livreurs.find(l => l.id == b.dataset.verser), () => renderAccueil(el)));
+}
+
+// ---------- Livreurs (admin) ----------
 
 async function renderLivreurs(el) {
   const comptes = await api(`/api/livreurs/comptes?from=${ymd()}&to=${ymd()}`);
   const totalDette = comptes.reduce((s, l) => s + Math.max(l.reste, 0), 0);
+  const refresh = () => renderLivreurs(el);
 
   el.innerHTML = `
-    <div class="section-title">
-      <h2>Livreurs</h2>
+    <div class="page-head">
+      <div>
+        <h1>Livreurs</h1>
+        <div class="sub">Ils gardent les frais de livraison et te rendent le prix de la nourriture.</div>
+      </div>
       <button class="btn primary" id="add-livreur">+ Ajouter un livreur</button>
     </div>
-    <div class="kpis">
-      <div class="card kpi ${totalDette > 0 ? 'alert' : 'good'}">
-        <div class="label">Argent encore chez les livreurs</div>
+    <div class="big-cards" style="grid-template-columns:1fr">
+      <div class="big-card ${totalDette > 0 ? 'alert' : 'good'}">
+        <div class="label">💸 Argent encore chez les livreurs</div>
         <div class="value">${da(totalDette)}</div>
-        <div class="sub">Ce qu'ils doivent rendre au restaurant</div>
       </div>
     </div>
-    <p class="muted">Règle : le livreur garde les frais de livraison et rend le prix de la nourriture.
-      Quand il te donne de l'argent, clique sur « Il a rendu de l'argent ».</p>
     <div class="livreurs">
-      ${comptes.map(l => `
-        <div class="card livreur">
+      ${comptes.map((l, i) => `
+        <div class="card livreur" style="animation-delay:${i * 40}ms">
           <h2>🛵 ${esc(l.name)} ${l.active ? '' : '<span class="badge annulee">ancien</span>'}</h2>
-          <div class="muted">${esc(l.phone) || 'pas de téléphone'}</div>
+          <div class="muted">${l.phone ? `📞 ${esc(l.phone)}` : 'pas de téléphone'}</div>
           <div class="reste ${l.reste > 0 ? 'dette' : ''}">
-            <div class="label">${l.reste > 0 ? 'Il doit rendre' : l.reste < 0 ? 'Il a rendu en trop' : 'Compte à jour'}</div>
+            <div class="label">${l.reste > 0 ? 'Il doit te rendre' : l.reste < 0 ? 'Il a rendu en trop' : 'Il ne te doit rien'}</div>
             <div class="value">${da(Math.abs(l.reste))}</div>
           </div>
           <div class="mini">
@@ -439,31 +750,32 @@ async function renderLivreurs(el) {
             <div>En route maintenant<b>${l.en_cours}</b></div>
             <div>Nourriture aujourd'hui<b>${da(l.ventes)}</b></div>
             <div>Ses frais aujourd'hui<b>${da(l.frais)}</b></div>
-            <div>Rendu aujourd'hui<b>${da(l.verse_periode)}</b></div>
           </div>
-          <div class="actions" style="justify-content:flex-start">
-            <button class="btn primary small" data-verser="${l.id}">💵 Il a rendu de l'argent</button>
+          <div class="acces">🔑 ${l.acces ? `Son accès : <b>${esc(l.acces)}</b>` : 'Pas encore d\'accès à sa page'}</div>
+          <div class="actions">
+            <button class="btn primary small" data-verser="${l.id}">💵 Il m'a donné</button>
             <button class="btn small" data-histo="${l.id}">Historique</button>
+            <button class="btn small" data-acces="${l.id}">🔑 Accès</button>
             <button class="btn small ghost" data-edit="${l.id}">Modifier</button>
           </div>
-        </div>`).join('') || '<p class="muted">Aucun livreur pour l\'instant.</p>'}
+        </div>`).join('') || '<div class="card empty"><span class="big-emoji">🛵</span>Aucun livreur pour l\'instant.</div>'}
     </div>`;
 
   const byId = id => comptes.find(l => l.id == id);
-  $('#add-livreur', el).onclick = () => editLivreur(null, el);
-  $$('[data-edit]', el).forEach(b => b.onclick = () => editLivreur(byId(b.dataset.edit), el));
-  $$('[data-verser]', el).forEach(b => b.onclick = () => verser(byId(b.dataset.verser), el));
-  $$('[data-histo]', el).forEach(b => b.onclick = () => attempt(() => historique(b.dataset.histo, el)));
+  $('#add-livreur', el).onclick = () => editLivreur(null, refresh);
+  $$('[data-edit]', el).forEach(b => b.onclick = () => editLivreur(byId(b.dataset.edit), refresh));
+  $$('[data-verser]', el).forEach(b => b.onclick = () => verser(byId(b.dataset.verser), refresh));
+  $$('[data-acces]', el).forEach(b => b.onclick = () => editAcces(byId(b.dataset.acces), refresh));
+  $$('[data-histo]', el).forEach(b => b.onclick = () => attempt(() => historique(b.dataset.histo, refresh)));
 }
 
-function editLivreur(l, pageEl) {
+function editLivreur(l, done) {
   const box = openModal(`
     <h2>${l ? 'Modifier le livreur' : 'Nouveau livreur'}</h2>
     <form id="lf">
       <label>Nom <input name="name" value="${esc(l?.name)}" required></label>
       <label>Téléphone <input name="phone" type="tel" value="${esc(l?.phone)}"></label>
-      ${l ? `<label style="flex-direction:row;align-items:center;gap:8px">
-        <input type="checkbox" name="active" ${l.active ? 'checked' : ''}> Travaille encore chez nous</label>` : ''}
+      ${l ? `<label class="check-row"><input type="checkbox" name="active" ${l.active ? 'checked' : ''}> Travaille encore chez nous</label>` : ''}
       <div class="modal-actions">
         <button type="button" class="btn" data-close>Annuler</button>
         <button class="btn primary">Enregistrer</button>
@@ -476,17 +788,49 @@ function editLivreur(l, pageEl) {
     await api(l ? `/api/livreurs/${l.id}` : '/api/livreurs', { method: l ? 'PUT' : 'POST', body });
     closeModal();
     S.livreurs = await api('/api/livreurs');
-    toast('Livreur enregistré');
-    renderLivreurs(pageEl);
+    toast('✓ Livreur enregistré');
+    done();
   });
 }
 
-function verser(l, pageEl) {
+function editAcces(l, done) {
   const box = openModal(`
-    <h2>💵 ${esc(l.name)} rend de l'argent</h2>
-    <p>Il doit actuellement <b class="plus">${da(Math.max(l.reste, 0))}</b>.</p>
+    <h2>🔑 Accès de ${esc(l.name)}</h2>
+    <p class="muted">Avec ce nom et ce mot de passe, ${esc(l.name)} voit <b>seulement ses livraisons</b>
+      et peut dire « c'est livré ». Il ne voit pas l'argent du restaurant.</p>
+    <form id="af">
+      <label>Nom d'utilisateur <input name="username" value="${esc(l.acces || l.name.toLowerCase().replace(/\s+/g, ''))}" required minlength="3" autocapitalize="none"></label>
+      <label>Mot de passe ${l.acces ? '(nouveau)' : ''} <input name="password" type="text" required minlength="6" autocomplete="off"></label>
+      <div class="modal-actions">
+        ${l.acces ? '<button type="button" class="btn danger" id="del-acces">Supprimer l\'accès</button>' : ''}
+        <button type="button" class="btn" data-close>Annuler</button>
+        <button class="btn primary">Enregistrer</button>
+      </div>
+    </form>`);
+  $('#af', box).onsubmit = e => attempt(async () => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await api(`/api/livreurs/${l.id}/acces`, { method: 'PUT', body: { username: f.get('username'), password: f.get('password') } });
+    closeModal();
+    toast(`✓ ${l.name} peut se connecter`);
+    done();
+  });
+  $('#del-acces', box)?.addEventListener('click', () => attempt(async () => {
+    await api(`/api/livreurs/${l.id}/acces`, { method: 'DELETE' });
+    closeModal();
+    toast('Accès supprimé');
+    done();
+  }));
+}
+
+function verser(l, done) {
+  const box = openModal(`
+    <h2>💵 ${esc(l.name)} te donne de l'argent</h2>
+    <p>Il te doit en ce moment <b class="plus">${da(Math.max(l.reste, 0))}</b>.</p>
     <form id="vf">
-      <label>Montant reçu (DA) <input name="amount" type="number" min="1" step="1" value="${Math.max(l.reste, 0) || ''}" required autofocus></label>
+      <label>Combien il t'a donné ? (DA)
+        <input name="amount" type="number" min="1" step="1" inputmode="numeric" value="${Math.max(l.reste, 0) || ''}" required>
+      </label>
       <label>Note <input name="note" placeholder="facultatif"></label>
       <div class="modal-actions">
         <button type="button" class="btn" data-close>Annuler</button>
@@ -501,12 +845,12 @@ function verser(l, pageEl) {
       body: { livreur_id: l.id, amount: Number(f.get('amount')), note: f.get('note') },
     });
     closeModal();
-    toast('Versement enregistré');
-    renderLivreurs(pageEl);
+    toast('✓ Argent enregistré');
+    done();
   });
 }
 
-async function historique(id, pageEl) {
+async function historique(id, done) {
   const { livreur, solde, lignes } = await api(`/api/livreurs/${id}/compte`);
   const box = openModal(`
     <div class="section-title">
@@ -521,13 +865,13 @@ async function historique(id, pageEl) {
           ${lignes.map(l => l.kind === 'commande' ? `
             <tr>
               <td>${dateFr(l.created_at)}</td>
-              <td>Commande n°${l.id} <span class="items">${esc(l.client_name)} ${esc(l.address)} · frais ${da(l.delivery_fee)}</span></td>
+              <td>Commande n°${l.id} <span class="muted">· frais ${da(l.delivery_fee)}</span></td>
               <td class="num plus">+ ${da(l.food_total)}</td><td></td>
               <td class="num">${da(l.solde)}</td><td></td>
             </tr>` : `
             <tr>
               <td>${dateFr(l.created_at)}</td>
-              <td>💵 Versement ${l.note ? `<span class="items">${esc(l.note)}</span>` : ''}</td>
+              <td>💵 Versement ${l.note ? `<span class="muted">${esc(l.note)}</span>` : ''}</td>
               <td></td><td class="num moins">− ${da(l.amount)}</td>
               <td class="num">${da(l.solde)}</td>
               <td><button class="btn small danger" data-del="${l.id}" title="Supprimer ce versement">✕</button></td>
@@ -539,138 +883,35 @@ async function historique(id, pageEl) {
     if (!confirm('Supprimer ce versement (erreur de saisie) ?')) return;
     await api(`/api/versements/${b.dataset.del}`, { method: 'DELETE' });
     toast('Versement supprimé');
-    await historique(id, pageEl);
-    renderLivreurs(pageEl);
+    await historique(id, done);
+    done();
   }));
 }
 
-// ---------- Tableau de bord ----------
+// ---------- Menu (produits) ----------
 
-const PRESETS = {
-  jour: () => [ymd(), ymd()],
-  hier: () => [ymd(addDays(-1)), ymd(addDays(-1))],
-  semaine: () => [ymd(addDays(-6)), ymd()],
-  mois: () => { const d = new Date(); return [ymd(new Date(d.getFullYear(), d.getMonth(), 1)), ymd()]; },
-};
-
-async function renderDashboard(el) {
-  const { from, to } = S.dash;
-  const st = await api(`/api/stats?from=${from}&to=${to}`);
-  const t = st.totals;
-  const encaisse = t.caisse_directe + t.verse_livreurs;
-
-  el.innerHTML = `
-    <div class="section-title">
-      <h2>Tableau de bord</h2>
-      <div class="toolbar" style="margin:0">
-        <div class="seg" style="margin:0">
-          ${[['jour', "Aujourd'hui"], ['hier', 'Hier'], ['semaine', '7 jours'], ['mois', 'Ce mois']].map(([k, l]) =>
-            `<button data-preset="${k}" class="${S.dash.preset === k ? 'on' : ''}">${l}</button>`).join('')}
-        </div>
-        <label>Du <input type="date" id="d-from" value="${from}"></label>
-        <label>Au <input type="date" id="d-to" value="${to}"></label>
-      </div>
-    </div>
-
-    <div class="kpis">
-      <div class="card kpi">
-        <div class="label">Ventes (nourriture)</div>
-        <div class="value">${da(t.ventes)}</div>
-        <div class="sub">${t.nb} commandes · ${t.annulees} annulée(s)</div>
-      </div>
-      <div class="card kpi good">
-        <div class="label">Argent entré dans la caisse</div>
-        <div class="value">${da(encaisse)}</div>
-        <div class="sub">${da(t.caisse_directe)} sur place/emporter + ${da(t.verse_livreurs)} rendus par les livreurs</div>
-      </div>
-      <div class="card kpi ${st.chez_livreurs > 0 ? 'alert' : 'good'}">
-        <div class="label">Encore chez les livreurs</div>
-        <div class="value">${da(st.chez_livreurs)}</div>
-        <div class="sub">Total à récupérer (tous les jours)</div>
-      </div>
-      <div class="card kpi">
-        <div class="label">Frais de livraison</div>
-        <div class="value">${da(t.frais_livraison)}</div>
-        <div class="sub">Gagnés par les livreurs</div>
-      </div>
-      <div class="card kpi">
-        <div class="label">Type de commandes</div>
-        <div class="value" style="font-size:18px">${t.nb_surplace} · ${t.nb_emporter} · ${t.nb_livraison}</div>
-        <div class="sub">sur place · à emporter · livraison</div>
-      </div>
-    </div>
-
-    <div class="two">
-      <div class="card">
-        <h2>Produits vendus</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Produit</th><th class="num">Quantité</th><th class="num">Montant</th></tr></thead>
-            <tbody>
-              ${st.produits.map(p => `<tr><td>${esc(p.name)}</td><td class="num"><b>${p.qty}</b></td><td class="num">${da(p.montant)}</td></tr>`).join('')
-                || '<tr><td colspan="3" class="muted">Aucune vente sur cette période.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Livreurs</h2>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Livreur</th><th class="num">Livraisons</th><th class="num">Nourriture</th><th class="num">Ses frais</th><th class="num">Rendu</th><th class="num">Doit encore</th></tr></thead>
-            <tbody>
-              ${st.livreurs.map(l => `
-                <tr>
-                  <td>${esc(l.name)}</td>
-                  <td class="num">${l.nb}</td>
-                  <td class="num">${da(l.ventes)}</td>
-                  <td class="num">${da(l.frais)}</td>
-                  <td class="num">${da(l.verse_periode)}</td>
-                  <td class="num ${l.reste > 0 ? 'plus' : 'moins'}">${da(l.reste)}</td>
-                </tr>`).join('') || '<tr><td colspan="6" class="muted">Aucun livreur.</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-        <p class="muted" style="font-size:12px">« Doit encore » = tout ce qu'il a pris depuis le début − tout ce qu'il a rendu.</p>
-      </div>
-    </div>`;
-
-  $$('[data-preset]', el).forEach(b => b.onclick = () => {
-    const [f, t2] = PRESETS[b.dataset.preset]();
-    S.dash = { from: f, to: t2, preset: b.dataset.preset };
-    renderDashboard(el);
-  });
-  const custom = () => {
-    const f = $('#d-from', el).value, t2 = $('#d-to', el).value;
-    if (!f || !t2) return;
-    S.dash = { from: f <= t2 ? f : t2, to: f <= t2 ? t2 : f, preset: '' };
-    renderDashboard(el);
-  };
-  $('#d-from', el).onchange = custom;
-  $('#d-to', el).onchange = custom;
-}
-
-// ---------- Produits ----------
-
-async function renderProduits(el) {
+async function renderMenu(el) {
   const all = await api('/api/products?all=1');
   const cats = [...new Set(all.map(p => p.category))];
 
   el.innerHTML = `
-    <div class="section-title"><h2>Produits (menu)</h2></div>
+    <div class="page-head">
+      <div><h1>Menu</h1><div class="sub">Les produits et leurs prix. Ce qui est ici apparaît dans la caisse.</div></div>
+    </div>
     <form class="card form-row" id="pf" style="margin-bottom:16px">
       <label>Nom <input name="name" required placeholder="ex : Pizza poulet"></label>
       <label>Catégorie <input name="category" list="cats" placeholder="ex : Pizzas"></label>
-      <label style="max-width:140px">Prix (DA) <input name="price" type="number" min="0" step="10" required></label>
+      <label style="max-width:150px">Prix (DA) <input name="price" type="number" min="0" step="10" inputmode="numeric" required></label>
       <button class="btn primary">+ Ajouter</button>
       <datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>
     </form>
-    <div class="card table-wrap" style="padding:0">
+    <div class="card table-wrap" style="padding:0 6px">
       <table>
-        <thead><tr><th>Nom</th><th>Catégorie</th><th>Prix (DA)</th><th>En vente</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Nom</th><th>Catégorie</th><th>Prix (DA)</th><th>En vente</th><th></th></tr></thead>
         <tbody>
           ${all.map(p => `
             <tr data-row="${p.id}">
+              <td style="font-size:24px">${emojiOf(p)}</td>
               <td><input data-k="name" value="${esc(p.name)}"></td>
               <td><input data-k="category" value="${esc(p.category)}" list="cats"></td>
               <td><input data-k="price" type="number" min="0" step="10" value="${p.price}" style="width:110px"></td>
@@ -689,9 +930,9 @@ async function renderProduits(el) {
       method: 'POST',
       body: { name: f.get('name'), category: f.get('category'), price: Number(f.get('price')) },
     });
-    toast('Produit ajouté');
+    toast('✓ Produit ajouté');
     S.products = await api('/api/products');
-    renderProduits(el);
+    renderMenu(el);
   });
 
   $$('[data-save]', el).forEach(b => b.onclick = () => attempt(async () => {
@@ -701,17 +942,38 @@ async function renderProduits(el) {
       method: 'PUT',
       body: { name: v('name').value, category: v('category').value, price: Number(v('price').value), active: v('active').checked },
     });
-    toast('Produit enregistré');
+    toast('✓ Produit enregistré');
     S.products = await api('/api/products');
   }));
 }
 
-// ---------- Paramètres ----------
+// ---------- Réglages ----------
 
-async function renderParametres(el) {
+function passwordForm() {
+  return `
+    <form id="pwf">
+      <label>Ancien mot de passe <input name="old" type="password" required autocomplete="current-password"></label>
+      <label>Nouveau mot de passe <input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
+      <button class="btn primary">Changer</button>
+    </form>`;
+}
+
+function bindPasswordForm(el) {
+  $('#pwf', el).onsubmit = e => attempt(async () => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await api('/api/me/password', { method: 'PUT', body: { old: f.get('old'), password: f.get('password') } });
+    e.target.reset();
+    toast('✓ Mot de passe changé');
+  });
+}
+
+async function renderReglages(el) {
   const users = isAdmin() ? await api('/api/users') : [];
+  const ROLE = { admin: '👑 patron', caissier: '🧾 caissier', livreur: '🛵 livreur' };
 
   el.innerHTML = `
+    <div class="page-head"><h1>Réglages</h1></div>
     <div class="two">
       ${isAdmin() ? `
         <form class="card" id="sf">
@@ -721,23 +983,22 @@ async function renderParametres(el) {
           <button class="btn primary">Enregistrer</button>
         </form>` : ''}
 
-      <form class="card" id="pwf">
+      <div class="card">
         <h2>Mon mot de passe</h2>
-        <label>Ancien mot de passe <input name="old" type="password" required autocomplete="current-password"></label>
-        <label>Nouveau mot de passe <input name="password" type="password" minlength="6" required autocomplete="new-password"></label>
-        <button class="btn primary">Changer</button>
-      </form>
+        ${passwordForm()}
+      </div>
 
       ${isAdmin() ? `
         <div class="card">
           <h2>Comptes</h2>
-          <p class="muted">Le <b>caissier</b> peut prendre les commandes et marquer « livrée ». Seul l'<b>admin</b> voit l'argent, les livreurs et peut annuler.</p>
+          <p class="muted">Le <b>caissier</b> prend les commandes mais ne voit pas l'argent.
+            Les accès des <b>livreurs</b> se créent dans la page Livreurs (bouton 🔑 Accès).</p>
           <table>
             <tbody>
               ${users.map(u => `
                 <tr>
                   <td><b>${esc(u.username)}</b></td>
-                  <td><span class="badge type">${u.role}</span></td>
+                  <td><span class="badge type">${ROLE[u.role]}${u.livreur_name ? ` · ${esc(u.livreur_name)}` : ''}</span></td>
                   <td class="num">${u.id === S.me.id ? '<span class="muted">toi</span>'
                     : `<button class="btn small danger" data-deluser="${u.id}" data-name="${esc(u.username)}">Supprimer</button>`}</td>
                 </tr>`).join('')}
@@ -745,12 +1006,12 @@ async function renderParametres(el) {
           </table>
           <form id="uf" style="margin-top:14px">
             <div class="form-row">
-              <label>Nom <input name="username" required minlength="3" autocomplete="off"></label>
+              <label>Nom <input name="username" required minlength="3" autocomplete="off" autocapitalize="none"></label>
               <label>Mot de passe <input name="password" type="password" required minlength="6" autocomplete="new-password"></label>
             </div>
             <div class="form-row" style="margin-top:10px">
               <label>Rôle
-                <select name="role"><option value="caissier">Caissier</option><option value="admin">Admin</option></select>
+                <select name="role"><option value="caissier">Caissier</option><option value="admin">Patron (admin)</option></select>
               </label>
               <button class="btn primary">+ Ajouter le compte</button>
             </div>
@@ -767,16 +1028,10 @@ async function renderParametres(el) {
     });
     await loadBase();
     S.form.fee = undefined;
-    toast('Réglages enregistrés');
+    toast('✓ Réglages enregistrés');
   }));
 
-  $('#pwf', el).onsubmit = e => attempt(async () => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api('/api/me/password', { method: 'PUT', body: { old: f.get('old'), password: f.get('password') } });
-    e.target.reset();
-    toast('Mot de passe changé');
-  });
+  bindPasswordForm(el);
 
   $('#uf', el)?.addEventListener('submit', e => attempt(async () => {
     e.preventDefault();
@@ -785,17 +1040,109 @@ async function renderParametres(el) {
       method: 'POST',
       body: { username: f.get('username'), password: f.get('password'), role: f.get('role') },
     });
-    toast('Compte ajouté');
-    renderParametres(el);
+    toast('✓ Compte ajouté');
+    renderReglages(el);
   }));
 
   $$('[data-deluser]', el).forEach(b => b.onclick = () => confirmer(
-    `Supprimer le compte « ${b.dataset.name} » ?`,
+    `Supprimer le compte « ${esc(b.dataset.name)} » ?`,
     async () => {
       await api(`/api/users/${b.dataset.deluser}`, { method: 'DELETE' });
       toast('Compte supprimé');
-      renderParametres(el);
-    }));
+      renderReglages(el);
+    }, 'Oui, supprimer'));
+}
+
+// ---------- Page du livreur ----------
+
+async function renderLivreurPage(el, auto = false) {
+  const d = await api('/api/livreur/moi');
+  const ids = d.a_livrer.map(o => o.id);
+  const fresh = S.seen ? ids.filter(id => !S.seen.has(id)) : [];
+  S.seen = new Set(ids);
+  if (auto && fresh.length) {
+    toast(`🛵 Nouvelle commande à livrer !`);
+    navigator.vibrate?.([200, 100, 200]);
+  }
+  // si on tape dans le mot de passe, on ne redessine pas la page
+  if (auto && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+
+  el.innerHTML = `
+    <div class="liv-page">
+      <div class="hello">Salam ${esc(S.me.livreur_name)} 👋</div>
+      <h1>Mes livraisons</h1>
+      <div class="liv-hero ${d.reste > 0 ? '' : 'clean'}">
+        <div class="label">${d.reste > 0 ? 'Tu dois rendre au restaurant' : 'Tu ne dois rien au restaurant 👍'}</div>
+        <div class="value">${da(Math.max(d.reste, 0))}</div>
+        <div class="sub">Aujourd'hui : ${plural(d.nb, 'livraison')} · tes frais : <b>${da(d.frais)}</b></div>
+      </div>
+
+      <div class="section-title">
+        <h2>À livrer (${d.a_livrer.length})</h2>
+        <button class="btn small" id="refresh">↻ Actualiser</button>
+      </div>
+      ${d.a_livrer.map((o, i) => deliverCard(o, i, fresh.includes(o.id))).join('')
+        || '<div class="card empty"><span class="big-emoji">😴</span>Rien à livrer pour le moment.</div>'}
+
+      ${d.livrees.length ? `
+        <div class="section-title" style="margin-top:22px"><h2>Livrées aujourd'hui</h2></div>
+        <div class="top-list">
+          ${d.livrees.map(o => `
+            <div class="top-item">
+              <span class="rank">✅</span>
+              <span class="what">N° ${o.id} <span class="muted">· ${hour(o.created_at)} ${o.address ? '· ' + esc(o.address) : ''}</span></span>
+              <span class="how"><b>${da(o.food_total)}</b> à rendre</span>
+            </div>`).join('')}
+        </div>` : ''}
+
+      <details class="more">
+        <summary>🔑 Changer mon mot de passe</summary>
+        <div class="inner">${passwordForm()}</div>
+      </details>
+    </div>`;
+
+  $('#refresh', el).onclick = () => attempt(() => renderLivreurPage(el, true));
+  $$('[data-livree]', el).forEach(b => b.onclick = () => {
+    const o = d.a_livrer.find(x => x.id == b.dataset.livree);
+    confirmer(`Tu as livré la commande <b>n°${o.id}</b> et le client t'a payé <b>${da(o.food_total + o.delivery_fee)}</b> ?`,
+      async () => {
+        await api(`/api/orders/${o.id}/status`, { method: 'PATCH', body: { status: 'livree' } });
+        toast('✅ Bravo, commande livrée !');
+        renderLivreurPage(el);
+      }, '✅ Oui, c\'est livré');
+  });
+  bindPasswordForm(el);
+
+  // Regarde toutes les 45 secondes s'il y a une nouvelle commande (seulement si l'écran est allumé)
+  clearInterval(S.poll);
+  S.poll = setInterval(() => {
+    if (document.visibilityState === 'visible' && !$('#modal').offsetParent) {
+      renderLivreurPage(el, true).catch(() => {});
+    }
+  }, 45000);
+}
+
+function deliverCard(o, i, fresh) {
+  const tel = (o.client_phone || '').replace(/[^\d+]/g, '');
+  return `
+    <div class="deliver ${fresh ? 'fresh' : ''}" style="animation-delay:${i * 50}ms">
+      <div class="order-top">
+        <div class="order-num">N° ${o.id}<small>${hour(o.created_at)}</small></div>
+        <span class="badge en_cours">🛵 À livrer</span>
+      </div>
+      <div class="where">
+        ${o.client_name ? `<div>👤 ${esc(o.client_name)}</div>` : ''}
+        ${tel ? `<a href="tel:${tel}">📞 ${esc(o.client_phone)}</a>` : ''}
+        ${o.address ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(o.address)}" target="_blank" rel="noopener">📍 ${esc(o.address)}</a>` : ''}
+      </div>
+      <div class="order-items" style="margin-bottom:12px">
+        ${o.items.map(it => `<div><b>${it.qty}×</b> ${esc(it.name)}</div>`).join('')}
+        ${o.note ? `<div class="muted">« ${esc(o.note)} »</div>` : ''}
+      </div>
+      <div class="collect"><span>Le client te paie</span><span class="amount">${da(o.food_total + o.delivery_fee)}</span></div>
+      <p class="muted" style="margin:-4px 0 12px">Tu gardes ${da(o.delivery_fee)} · tu rends <b style="color:var(--ink)">${da(o.food_total)}</b> au restaurant</p>
+      <button class="btn green big" data-livree="${o.id}">✅ C'est livré</button>
+    </div>`;
 }
 
 boot().catch(e => toast(e.message, true));
