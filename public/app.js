@@ -106,7 +106,7 @@ function bump(el) {
 
 const S = {
   me: null,
-  settings: { restaurant_name: 'Brother', delivery_fee: 200 },
+  settings: { restaurant_name: 'Brother' },
   products: [],
   livreurs: [],
   cart: {},          // { productId: quantité }
@@ -351,7 +351,6 @@ function renderPanier() {
   if (!el) return;
   const lines = cartLines();
   const isLiv = S.type === 'livraison';
-  if (S.form.fee === undefined) S.form.fee = S.settings.delivery_fee;
   updateCounts();
 
   el.innerHTML = `
@@ -388,12 +387,9 @@ function renderPanier() {
                 ${S.livreurs.map(l => `<option value="${l.id}" ${S.form.livreur_id == l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
               </select>
             </label>
-            <label>Frais de livraison
-              <input data-f="fee" type="number" min="0" step="10" inputmode="numeric" value="${esc(S.form.fee)}">
-            </label>
-            <label>Client <input data-f="client_name" value="${esc(S.form.client_name)}" placeholder="Nom"></label>
             <label>Téléphone <input data-f="client_phone" type="tel" value="${esc(S.form.client_phone)}"></label>
           </div>
+          <label>Client <input data-f="client_name" value="${esc(S.form.client_name)}" placeholder="Nom"></label>
           <label>Adresse <input data-f="address" value="${esc(S.form.address)}"></label>
           ${S.livreurs.length ? '' : '<p class="error" style="margin-bottom:10px">Aucun livreur. Le patron l\'ajoute dans la page Livreurs.</p>'}
         </div>` : ''}
@@ -422,23 +418,18 @@ function renderTotaux() {
   const lines = cartLines();
   const food = lines.reduce((s, l) => s + l.p.price * l.qty, 0);
   const isLiv = S.type === 'livraison';
-  const fee = isLiv && lines.length ? Number(S.form.fee) || 0 : 0;
-
   // Bouton flottant (téléphone) pour descendre jusqu'à la commande
   const go = $('#go-panier');
   const n = lines.reduce((s, l) => s + l.qty, 0);
   go.classList.toggle('hidden', n === 0);
-  go.innerHTML = `<span>🧾 Voir la commande (${n})</span><b>${da(food + fee)}</b>`;
+  go.innerHTML = `<span>🧾 Voir la commande (${n})</span><b>${da(food)}</b>`;
 
-  $('#totaux').innerHTML = isLiv ? `
-    <div class="tot"><span>Nourriture</span><b>${da(food)}</b></div>
-    <div class="tot"><span>Livraison (pour le livreur)</span><b>${da(fee)}</b></div>
-    <div class="tot big"><span>Le client paie</span><span class="amount" id="total">${da(food + fee)}</span></div>
-    <div class="tot warn"><span>🛵 Le livreur doit rendre</span><span>${da(food)}</span></div>` : `
-    <div class="tot big"><span>Total</span><span class="amount" id="total">${da(food)}</span></div>`;
+  $('#totaux').innerHTML = `
+    <div class="tot big"><span>${isLiv ? 'Le client paie' : 'Total'}</span><span class="amount" id="total">${da(food)}</span></div>
+    ${isLiv ? `<div class="tot warn"><span>🛵 Le livreur doit rendre</span><span>${da(food)}</span></div>` : ''}`;
 
-  if (food + fee !== S.lastTotal) bump($('#total'));
-  S.lastTotal = food + fee;
+  if (food !== S.lastTotal) bump($('#total'));
+  S.lastTotal = food;
 }
 
 async function validerCommande() {
@@ -451,7 +442,6 @@ async function validerCommande() {
         type: S.type,
         items: cartLines().map(l => ({ product_id: l.p.id, qty: l.qty })),
         livreur_id: S.form.livreur_id,
-        delivery_fee: Number(S.form.fee) || 0,
         client_name: S.form.client_name,
         client_phone: S.form.client_phone,
         address: S.form.address,
@@ -471,7 +461,7 @@ async function validerCommande() {
 }
 
 function showDone(o) {
-  const total = o.food_total + o.delivery_fee;
+  const total = o.food_total;
   const box = openModal(`
     <div class="done">
       <div class="tick"><svg viewBox="0 0 48 48"><path d="M12 25 l8 8 l16 -18"/></svg></div>
@@ -502,8 +492,7 @@ function printTicket(o) {
     <hr>
     ${o.items.map(i => row(`${i.qty} x ${esc(i.name)}`, num(i.qty * i.price))).join('')}
     <hr>
-    ${isLiv ? row('Sous-total', num(o.food_total)) + row('Livraison', num(o.delivery_fee)) : ''}
-    <div class="t-row t-total"><span>TOTAL</span><span>${da(o.food_total + o.delivery_fee)}</span></div>
+    <div class="t-row t-total"><span>TOTAL</span><span>${da(o.food_total)}</span></div>
     ${o.note ? `<hr><div><b>Note :</b> ${esc(o.note)}</div>` : ''}
     ${isLiv ? `<hr>
       ${o.client_name ? `<div>Client : ${esc(o.client_name)}</div>` : ''}
@@ -579,12 +568,12 @@ function orderCard(o, i) {
       </div>
       ${o.type === 'livraison' ? `
         <div class="order-info">
-          🛵 <b style="color:var(--ink)">${esc(o.livreur_name)}</b> · frais ${da(o.delivery_fee)}
+          🛵 <b style="color:var(--ink)">${esc(o.livreur_name)}</b>
           ${o.client_name || o.client_phone ? `<br>👤 ${esc(o.client_name)} ${esc(o.client_phone)}` : ''}
           ${o.address ? `<br>📍 ${esc(o.address)}` : ''}
         </div>` : ''}
       <div class="order-sum">
-        <span class="muted">${o.type === 'livraison' ? 'Nourriture' : 'Total'}</span>
+        <span class="muted">Total</span>
         <span class="amount">${da(o.food_total)}</span>
       </div>
       <div class="actions">
@@ -683,7 +672,6 @@ async function renderAccueil(el) {
         <div class="kpis">
           <div class="kpi"><div class="label">Ventes sur place / à emporter</div><div class="value">${da(t.caisse_directe)}</div></div>
           <div class="kpi"><div class="label">Ventes en livraison</div><div class="value">${da(t.ventes_livraison)}</div></div>
-          <div class="kpi"><div class="label">Frais gagnés par les livreurs</div><div class="value">${da(t.frais_livraison)}</div></div>
           <div class="kpi"><div class="label">Sur place · À emporter · Livraison</div><div class="value">${t.nb_surplace} · ${t.nb_emporter} · ${t.nb_livraison}</div></div>
           <div class="kpi"><div class="label">Commandes annulées</div><div class="value">${t.annulees}</div></div>
         </div>
@@ -697,12 +685,12 @@ async function renderAccueil(el) {
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Livreur</th><th class="num">Livr.</th><th class="num">Nourriture</th><th class="num">Frais</th><th class="num">Rendu</th><th class="num">Doit</th></tr></thead>
+              <thead><tr><th>Livreur</th><th class="num">Livr.</th><th class="num">Ventes</th><th class="num">Rendu</th><th class="num">Doit</th></tr></thead>
               <tbody>${st.livreurs.map(l => `
                 <tr><td>${esc(l.name)}</td><td class="num">${l.nb}</td><td class="num">${da(l.ventes)}</td>
-                <td class="num">${da(l.frais)}</td><td class="num">${da(l.verse_periode)}</td>
+                <td class="num">${da(l.verse_periode)}</td>
                 <td class="num ${l.reste > 0 ? 'plus' : 'moins'}">${da(l.reste)}</td></tr>`).join('')
-                || '<tr><td colspan="6" class="muted">Aucun livreur.</td></tr>'}</tbody>
+                || '<tr><td colspan="5" class="muted">Aucun livreur.</td></tr>'}</tbody>
             </table>
           </div>
         </div>
@@ -738,7 +726,7 @@ async function renderLivreurs(el) {
     <div class="page-head">
       <div>
         <h1>Livreurs</h1>
-        <div class="sub">Ils gardent les frais de livraison et te rendent le prix de la nourriture.</div>
+        <div class="sub">Ils te rendent tout l'argent que les clients leur donnent.</div>
       </div>
       <button class="btn primary" id="add-livreur">+ Ajouter un livreur</button>
     </div>
@@ -760,8 +748,8 @@ async function renderLivreurs(el) {
           <div class="mini">
             <div>Livraisons aujourd'hui<b>${l.nb}</b></div>
             <div>En route maintenant<b>${l.en_cours}</b></div>
-            <div>Nourriture aujourd'hui<b>${da(l.ventes)}</b></div>
-            <div>Ses frais aujourd'hui<b>${da(l.frais)}</b></div>
+            <div>Ventes aujourd'hui<b>${da(l.ventes)}</b></div>
+            <div>Rendu aujourd'hui<b>${da(l.verse_periode)}</b></div>
           </div>
           <div class="acces">🔑 ${l.acces ? `Son accès : <b>${esc(l.acces)}</b>` : 'Pas encore d\'accès à sa page'}</div>
           <div class="actions">
@@ -892,7 +880,7 @@ async function historique(id, done) {
           ${lignes.map(l => l.kind === 'commande' ? `
             <tr>
               <td>${dateFr(l.created_at)}</td>
-              <td>Commande n°${l.id} <span class="muted">· frais ${da(l.delivery_fee)}</span></td>
+              <td>Commande n°${l.id}</td>
               <td class="num plus">+ ${da(l.food_total)}</td><td></td>
               <td class="num">${da(l.solde)}</td><td></td>
             </tr>` : `
@@ -1002,7 +990,6 @@ async function renderReglages(el) {
         <form class="card" id="sf">
           <h2>Restaurant</h2>
           <label>Nom du restaurant <input name="restaurant_name" value="${esc(S.settings.restaurant_name)}"></label>
-          <label>Frais de livraison par défaut (DA) <input name="delivery_fee" type="number" min="0" step="10" value="${S.settings.delivery_fee}"></label>
           <button class="btn primary">Enregistrer</button>
         </form>` : ''}
 
@@ -1039,18 +1026,43 @@ async function renderReglages(el) {
               <button class="btn primary">+ Ajouter le compte</button>
             </div>
           </form>
+        </div>
+
+        <div class="card" style="border-color:rgba(227,38,47,.45)">
+          <h2>🧹 Remettre à zéro</h2>
+          <p class="muted">Après tes essais, efface <b>toutes les commandes</b> et <b>tout l'argent rendu par les livreurs</b>.
+            Le menu, les livreurs et les comptes restent. Les numéros de commande repartent à 1.</p>
+          <button class="btn danger" id="reset">🧹 Tout effacer et repartir à zéro</button>
         </div>` : ''}
     </div>`;
+
+  $('#reset', el)?.addEventListener('click', () => {
+    const box = openModal(`
+      <h2>🧹 Tout effacer ?</h2>
+      <p>Toutes les commandes et tout l'argent rendu seront <b>effacés pour toujours</b>.</p>
+      <form id="rf">
+        <label>Pour confirmer, écris <b style="color:var(--ink)">EFFACER</b> <input name="confirm" autocomplete="off" autocapitalize="characters" required></label>
+        <div class="modal-actions">
+          <button type="button" class="btn" data-close>Non</button>
+          <button class="btn primary">Tout effacer</button>
+        </div>
+      </form>`);
+    $('#rf', box).onsubmit = e => attempt(async () => {
+      e.preventDefault();
+      await api('/api/reset', { method: 'POST', body: { confirm: new FormData(e.target).get('confirm').trim().toUpperCase() } });
+      closeModal();
+      toast('🧹 Tout est remis à zéro');
+    });
+  });
 
   $('#sf', el)?.addEventListener('submit', e => attempt(async () => {
     e.preventDefault();
     const f = new FormData(e.target);
     await api('/api/settings', {
       method: 'PUT',
-      body: { restaurant_name: f.get('restaurant_name'), delivery_fee: Number(f.get('delivery_fee')) },
+      body: { restaurant_name: f.get('restaurant_name') },
     });
     await loadBase();
-    S.form.fee = undefined;
     toast('✓ Réglages enregistrés');
   }));
 
@@ -1097,7 +1109,7 @@ async function renderLivreurPage(el, auto = false) {
       <div class="liv-hero ${d.reste > 0 ? '' : 'clean'}">
         <div class="label">${d.reste > 0 ? 'Tu dois rendre au restaurant' : 'Tu ne dois rien au restaurant 👍'}</div>
         <div class="value">${da(Math.max(d.reste, 0))}</div>
-        <div class="sub">Aujourd'hui : ${plural(d.nb, 'livraison')} · tes frais : <b>${da(d.frais)}</b></div>
+        <div class="sub">Aujourd'hui : ${plural(d.nb, 'livraison')}</div>
       </div>
 
       <div class="section-title">
@@ -1127,7 +1139,7 @@ async function renderLivreurPage(el, auto = false) {
   $('#refresh', el).onclick = () => attempt(() => renderLivreurPage(el, true));
   $$('[data-livree]', el).forEach(b => b.onclick = () => {
     const o = d.a_livrer.find(x => x.id == b.dataset.livree);
-    confirmer(`Tu as livré la commande <b>n°${o.id}</b> et le client t'a payé <b>${da(o.food_total + o.delivery_fee)}</b> ?`,
+    confirmer(`Tu as livré la commande <b>n°${o.id}</b> et le client t'a payé <b>${da(o.food_total)}</b> ?`,
       async () => {
         await api(`/api/orders/${o.id}/status`, { method: 'PATCH', body: { status: 'livree' } });
         toast('✅ Bravo, commande livrée !');
@@ -1163,8 +1175,8 @@ function deliverCard(o, i, fresh) {
         ${o.items.map(it => `<div><b>${it.qty}×</b> ${esc(it.name)}</div>`).join('')}
         ${o.note ? `<div class="muted">« ${esc(o.note)} »</div>` : ''}
       </div>
-      <div class="collect"><span>Le client te paie</span><span class="amount">${da(o.food_total + o.delivery_fee)}</span></div>
-      <p class="muted" style="margin:-4px 0 12px">Tu gardes ${da(o.delivery_fee)} · tu rends <b style="color:var(--ink)">${da(o.food_total)}</b> au restaurant</p>
+      <div class="collect"><span>Le client te paie</span><span class="amount">${da(o.food_total)}</span></div>
+      <p class="muted" style="margin:-4px 0 12px">Tu rends tout cet argent au restaurant</p>
       <button class="btn green big" data-livree="${o.id}">✅ C'est livré</button>
     </div>`;
 }

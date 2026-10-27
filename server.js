@@ -216,10 +216,9 @@ app.get('/api/settings', auth, route(async (req, res) => {
 
 app.put('/api/settings', admin, route(async (req, res) => {
   const name = text(req.body.restaurant_name, 60) || 'Mini Restaurant';
-  const fee = money(req.body.delivery_fee, 'Frais de livraison');
   await pool.query(`
-    INSERT INTO settings (key, value) VALUES ('restaurant_name', $1), ('delivery_fee', $2)
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [name, String(fee)]);
+    INSERT INTO settings (key, value) VALUES ('restaurant_name', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [name]);
   res.json({ ok: true });
 }));
 
@@ -296,7 +295,7 @@ app.delete('/api/livreurs/:id', admin, route(async (req, res) => {
 
 // Le compte de chaque livreur.
 // Règle : dès qu'une commande part avec le livreur, il doit rendre le prix de la nourriture
-// (food_total). Les frais de livraison sont à lui. Seul l'admin peut annuler une commande.
+// (food_total). Les livreurs sont payés au mois : pas de frais de livraison. Seul l'admin peut annuler une commande.
 // reste = tout ce qu'il doit depuis le début − tout ce qu'il a déjà versé.
 async function livreurComptes(from, to, onlyId = null) {
   const rows = await all(`
@@ -423,13 +422,13 @@ app.post('/api/orders', staff, route(async (req, res) => {
   });
   const food = lines.reduce((s, l) => s + l.p.price * l.qty, 0);
 
+  // Pas de frais de livraison : les livreurs sont payés au mois
   let livreurId = null;
-  let fee = 0;
+  const fee = 0;
   if (type === 'livraison') {
     const l = await one('SELECT id FROM livreurs WHERE id = $1 AND active', [id(req.body.livreur_id)]);
     if (!l) fail('Choisis un livreur');
     livreurId = l.id;
-    fee = money(req.body.delivery_fee, 'Frais de livraison');
   }
 
   const orderId = await transaction(async client => {
@@ -509,6 +508,13 @@ app.delete('/api/orders/:id', admin, route(async (req, res) => {
     return (await client.query('DELETE FROM orders WHERE id = $1', [id(req.params.id)])).rowCount;
   });
   if (!deleted) fail('Commande introuvable', 404);
+  res.json({ ok: true });
+}));
+
+// Remettre à zéro après les essais : efface commandes et versements (garde menu, livreurs, comptes)
+app.post('/api/reset', admin, route(async (req, res) => {
+  if (req.body.confirm !== 'EFFACER') fail('Écris EFFACER pour confirmer');
+  await pool.query('TRUNCATE order_items, orders, versements RESTART IDENTITY');
   res.json({ ok: true });
 }));
 
