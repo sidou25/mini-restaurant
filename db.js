@@ -1,4 +1,5 @@
-// Connexion à PostgreSQL (adresse dans la variable DATABASE_URL)
+// Connexion à PostgreSQL : Supabase en ligne (SUPA_POSTGRES_URL, mise par Vercel),
+// sinon DATABASE_URL (base locale sur le PC)
 const fs = require('fs');
 const path = require('path');
 const { Pool, types } = require('pg');
@@ -10,8 +11,21 @@ types.setTypeParser(1114, v => v);
 types.setTypeParser(1082, v => v);
 
 const onVercel = Boolean(process.env.VERCEL);
+const DB_URL = process.env.SUPA_POSTGRES_URL || process.env.DATABASE_URL;
+
+// Supabase signe ses certificats avec sa propre autorité, inconnue de Node :
+// on la lui donne (certs/supabase-ca-2021.crt) pour que la connexion reste vérifiée
+function poolConfig(url) {
+  if (!url || !url.includes('.supabase.com')) return { connectionString: url };
+  const u = new URL(url);
+  u.searchParams.delete('sslmode');
+  u.searchParams.delete('supa');
+  const ca = fs.readFileSync(path.join(__dirname, 'certs', 'supabase-ca-2021.crt'), 'utf8');
+  return { connectionString: u.toString(), ssl: { ca } };
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  ...poolConfig(DB_URL),
   max: onVercel ? 3 : 10,
   idleTimeoutMillis: onVercel ? 5000 : 10000,
 });
@@ -23,7 +37,7 @@ let ready = null;
 function init() {
   if (!ready) {
     ready = (async () => {
-      if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL manquant');
+      if (!DB_URL) throw new Error('DATABASE_URL manquant');
       await pool.query(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
     })();
     ready.catch(() => { ready = null; });
@@ -50,4 +64,4 @@ async function transaction(fn) {
   }
 }
 
-module.exports = { pool, init, all, one, transaction };
+module.exports = { pool, poolConfig, init, all, one, transaction };

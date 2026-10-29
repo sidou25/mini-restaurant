@@ -36,11 +36,22 @@ const EMOJIS = [
 const emojiOf = p => (EMOJIS.find(([r]) => r.test(p.name)) || EMOJIS.find(([r]) => r.test(p.category)) || [0, '🍽️'])[1];
 
 async function api(url, { method = 'GET', body } = {}) {
-  const res = await fetch(url, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // Internet trop lent : on arrête d'attendre au bout de 15 s, sinon le bouton reste bloqué
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+  } catch {
+    throw new Error(ctrl.signal.aborted ? 'Internet trop lent : réessaie' : 'Pas d\'internet : réessaie');
+  } finally {
+    clearTimeout(timer);
+  }
   const data = await res.json().catch(() => ({}));
   // Nouvelle version en ligne ? On rechargera la page au prochain changement de page
   const version = res.headers.get('X-App-Version');
@@ -435,19 +446,24 @@ function renderTotaux() {
 async function validerCommande() {
   const btn = $('#valider');
   btn.disabled = true;
+  const body = {
+    type: S.type,
+    items: cartLines().map(l => ({ product_id: l.p.id, qty: l.qty })),
+    livreur_id: S.form.livreur_id,
+    client_name: S.form.client_name,
+    client_phone: S.form.client_phone,
+    address: S.form.address,
+    note: S.form.note,
+  };
+  // Même panier renvoyé après une coupure = même numéro : le serveur ne crée pas la commande deux fois
+  const sig = JSON.stringify(body);
+  if (!S.pending || S.pending.sig !== sig) {
+    const key = crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2);
+    S.pending = { sig, key };
+  }
   try {
-    const order = await api('/api/orders', {
-      method: 'POST',
-      body: {
-        type: S.type,
-        items: cartLines().map(l => ({ product_id: l.p.id, qty: l.qty })),
-        livreur_id: S.form.livreur_id,
-        client_name: S.form.client_name,
-        client_phone: S.form.client_phone,
-        address: S.form.address,
-        note: S.form.note,
-      },
-    });
+    const order = await api('/api/orders', { method: 'POST', body: { ...body, key: S.pending.key } });
+    S.pending = null;
     S.cart = {};
     S.form = {};
     S.lastAdded = null;

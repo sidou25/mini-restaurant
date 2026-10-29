@@ -409,6 +409,10 @@ app.delete('/api/versements/:id', admin, route(async (req, res) => {
 
 app.post('/api/orders', staff, route(async (req, res) => {
   const { type, items } = req.body;
+  // Numéro unique du panier : si internet a coupé et que la caisse renvoie, on rend la commande déjà créée
+  const key = typeof req.body.key === 'string' && req.body.key ? req.body.key.slice(0, 64) : null;
+  const already = key && await one('SELECT id FROM orders WHERE client_key = $1', [key]);
+  if (already) return res.json(await getOrder(already.id));
   if (!['surplace', 'emporter', 'livraison'].includes(type)) fail('Type de commande invalide');
   if (!Array.isArray(items) || items.length === 0 || items.length > 100) fail('La commande est vide');
 
@@ -433,21 +437,28 @@ app.post('/api/orders', staff, route(async (req, res) => {
     livreurId = l.id;
   }
 
-  const orderId = await transaction(async client => {
-    const { rows } = await client.query(`
-      INSERT INTO orders (type, livreur_id, client_name, client_phone, address, note,
-                          food_total, delivery_fee, status, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`, [
-      type, livreurId, text(req.body.client_name, 60), text(req.body.client_phone, 30),
-      text(req.body.address), text(req.body.note), food, fee,
-      type === 'livraison' ? 'en_cours' : 'terminee', req.user.id,
-    ]);
-    for (const l of lines) {
-      await client.query('INSERT INTO order_items (order_id, product_id, name, price, qty) VALUES ($1, $2, $3, $4, $5)',
-        [rows[0].id, l.p.id, l.p.name, l.p.price, l.qty]);
-    }
-    return rows[0].id;
-  });
+  let orderId;
+  try {
+    orderId = await transaction(async client => {
+      const { rows } = await client.query(`
+        INSERT INTO orders (type, livreur_id, client_name, client_phone, address, note,
+                            food_total, delivery_fee, status, created_by, client_key)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`, [
+        type, livreurId, text(req.body.client_name, 60), text(req.body.client_phone, 30),
+        text(req.body.address), text(req.body.note), food, fee,
+        type === 'livraison' ? 'en_cours' : 'terminee', req.user.id, key,
+      ]);
+      for (const l of lines) {
+        await client.query('INSERT INTO order_items (order_id, product_id, name, price, qty) VALUES ($1, $2, $3, $4, $5)',
+          [rows[0].id, l.p.id, l.p.name, l.p.price, l.qty]);
+      }
+      return rows[0].id;
+    });
+  } catch (e) {
+    // Les deux envois sont arrivés en même temps : le premier a gagné, on rend sa commande
+    if (e.code !== '23505' || e.constraint !== 'idx_orders_client_key') throw e;
+    orderId = (await one('SELECT id FROM orders WHERE client_key = $1', [key])).id;
+  }
 
   res.json(await getOrder(orderId));
 }));

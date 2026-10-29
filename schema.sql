@@ -76,6 +76,10 @@ BEGIN
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_livreur ON users(livreur_id);
 
+-- Numéro unique du panier envoyé par la caisse : une coupure d'internet ne crée pas deux commandes
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS client_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_client_key ON orders(client_key);
+
 -- Sessions de connexion (connect-pg-simple)
 CREATE TABLE IF NOT EXISTS session (
   sid VARCHAR NOT NULL PRIMARY KEY,
@@ -88,6 +92,17 @@ CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_livreur ON orders(livreur_id);
 CREATE INDEX IF NOT EXISTS idx_items_order ON order_items(order_id);
 CREATE INDEX IF NOT EXISTS idx_versements_livreur ON versements(livreur_id);
+
+-- Supabase ouvre aussi les tables à son API publique : on la ferme.
+-- Le serveur se connecte en propriétaire des tables, lui n'est pas bloqué.
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE livreurs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE versements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE session ENABLE ROW LEVEL SECURITY;
 
 INSERT INTO settings (key, value) VALUES ('restaurant_name', 'Brother'), ('delivery_fee', '200')
 ON CONFLICT (key) DO NOTHING;
